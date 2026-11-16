@@ -231,8 +231,11 @@ if ($Remove) {
     }
 
     Say "Done"
-    Write-Host "If anything still behaves differently, use System Restore and pick the"
-    Write-Host "restore point 'Before Blighter Restrictor' (Start > 'Create a restore point' > System Restore)."
+    $rp = Join-Path $StateDir "restore-point.txt"
+    if (Test-Path $rp) {
+        Write-Host "If anything still behaves differently, use System Restore and pick the restore point"
+        Write-Host "'Before Blighter Restrictor' from $(Get-Content $rp -TotalCount 1) (Start > 'Create a restore point' > System Restore)."
+    }
     if (Test-Path $Dest) {
         if (Ask "Delete the folder $Dest (helper, logs and saved state)?" "y") {
             Set-Location $env:TEMP
@@ -311,9 +314,12 @@ if (-not (Test-Path $PreFile)) {
         # Windows allows one restore point per 24 hours unless told otherwise.
         $srKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore"
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+        if (-not (Test-Path $srKey)) { New-Item -Path $srKey -Force | Out-Null }
         New-ItemProperty -Path $srKey -Name SystemRestorePointCreationFrequency -Value 0 -PropertyType DWord -Force | Out-Null
         Checkpoint-Computer -Description "Before Blighter Restrictor" -RestorePointType MODIFY_SETTINGS
         Remove-ItemProperty -Path $srKey -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue
+        if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
+        Set-Content -Path (Join-Path $StateDir "restore-point.txt") -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         Write-Host "Restore point 'Before Blighter Restrictor' created."
     } catch {
         Warn "Could not create a restore point ($($_.Exception.Message)).  Removal will still put the settings back."
