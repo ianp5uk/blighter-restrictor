@@ -355,7 +355,21 @@ class MainWindow(QMainWindow):
         ev.accept()
 
 
+def _windowed_logging():
+    """The Windows build has no console (sys.stderr is None), so send output
+    to a log file in the settings folder - useful when something goes wrong."""
+    if sys.stderr is None or sys.stdout is None:
+        from .config_store import config_dir
+        log = open(os.path.join(config_dir(), "blighter-restrictor.log"), "a",
+                   encoding="utf-8", buffering=1)
+        sys.stdout = sys.stdout or log
+        sys.stderr = sys.stderr or log
+
+
 def main():
+    _windowed_logging()
+    if "--self-test" in sys.argv:
+        print("self-test: starting", flush=True)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("blighter-restrictor")
@@ -363,5 +377,6 @@ def main():
     app.aboutToQuit.connect(win.remotes.close_all)
     win.show()
     if "--self-test" in sys.argv:  # used by the Windows build to check the exe starts
+        print("self-test: window shown", flush=True)
         QTimer.singleShot(3000, app.quit)
     sys.exit(app.exec())

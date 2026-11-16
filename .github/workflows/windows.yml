@@ -28,11 +28,12 @@ jobs:
         run: powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
       - name: Self-test the built exe
         shell: pwsh
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: |
+          $log = Join-Path $env:APPDATA "BlighterRestrictor\blighter-restrictor.log"
           $p = Start-Process dist\BlighterRestrictor\BlighterRestrictor.exe -ArgumentList "--self-test" -PassThru
-          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "exe did not exit" }
+          $done = $p.WaitForExit(60000)
+          if (Test-Path $log) { Get-Content $log }
+          if (-not $done) { $p.Kill(); throw "exe did not exit" }
           if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
           Write-Host "Self-test passed"
       - uses: actions/upload-artifact@v4
