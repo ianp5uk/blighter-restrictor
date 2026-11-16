@@ -10,6 +10,14 @@
 # "Forget host key" in the child's settings.
 # Logging out closes the SSH session on the laptop; this happens on request
 # (Log out button / menu), after 5 minutes without use, and when the app closes.
+#
+# Copyright (C) 2026 Ways Property
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.  It is distributed WITHOUT ANY WARRANTY; see the
+# LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
 
 import json

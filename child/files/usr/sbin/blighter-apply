@@ -17,6 +17,14 @@
 #   log N [rotated]     plain text: last N lines of the Squid access log,
 #                       optionally including older rotated logs
 #   init                (used by blighter-setup) create default files if absent
+#
+# Copyright (C) 2026 Ways Property
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.  It is distributed WITHOUT ANY WARRANTY; see the
+# LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
 
 import gzip

@@ -4,7 +4,7 @@ Purpose: how the system works, how to install the parent app and the child
 package, day-to-day use, limits, and how to build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.1.0
+# Blighter Restrictor 1.1.1
 
 Monitor and restrict your children's web access on their Ubuntu 26.04 laptops.
 Each child's laptop runs Squid as a local web filter. The parent app (Linux or
@@ -41,7 +41,7 @@ Do this as an administrator on the child's laptop. The child's own account
 must **not** be an administrator.
 
 ```bash
-sudo apt install ./blighter-child_1.1.0_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.1.1_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
@@ -66,10 +66,10 @@ Notes:
 
 ## 2. Install the parent app
 
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.1.0_all.deb`, then start
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.1.1_all.deb`, then start
 *Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
 
-**Windows:** run `BlighterRestrictor-Setup-1.1.0.exe` (see "Building for
+**Windows:** run `BlighterRestrictor-Setup-1.1.1.exe` (see "Building for
 Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
 click *More info → Run anyway*.
 
@@ -142,8 +142,24 @@ on a Windows 10/11 PC instead:
    ```powershell
    powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
    ```
-4. Result: `dist\BlighterRestrictor-Setup-1.1.0.exe`. Install it on your wife's PC.
+4. Result: `dist\BlighterRestrictor-Setup-1.1.1.exe`. Install it on your wife's PC.
    (Without Inno Setup you get a runnable folder `dist\BlighterRestrictor\` instead.)
+
+## Licence
+
+Copyright (C) 2026 Ways Property.
+
+Blighter Restrictor is free software, licensed under the **GNU General Public
+License v3.0 or later** (`GPL-3.0-or-later`); the full text is in [LICENSE](LICENSE).
+You may use, copy, modify and redistribute it. If you distribute it, or a
+modified version, whether free or for a fee, you must do so under the same
+licence and make the complete source code available to the people you give it
+to. It comes with **no warranty**.
+
+Libraries used: PySide6 / Qt (LGPL-3.0), Paramiko (LGPL-2.1-or-later),
+keyring (MIT). The Windows build also bundles their dependencies (e.g.
+cryptography, bcrypt, PyNaCl), each under its own licence. The child laptops use
+Squid (GPL-2.0-or-later) and nftables from Ubuntu.
 
 ## Files
 
@@ -157,3 +173,4 @@ on a Windows 10/11 PC instead:
 | `child/files/usr/sbin/blighter-firewall` | Child-only nftables firewall |
 | `child/files/usr/share/blighter-child/squid.conf` | Managed Squid configuration |
 | `windows/` | Windows build script, installer definition, icon |
+| `LICENSE` | GNU General Public License v3.0 |

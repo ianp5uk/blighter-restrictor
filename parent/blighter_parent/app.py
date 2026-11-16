@@ -13,6 +13,14 @@
 # automatically after 5 minutes without use, and always when the app closes.
 # Text size: View > Larger / Smaller / Normal text (Ctrl +, Ctrl -, Ctrl 0),
 # remembered between runs - for high-resolution screens.
+#
+# Copyright (C) 2026 Ways Property
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.  It is distributed WITHOUT ANY WARRANTY; see the
+# LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
 
 import os
@@ -25,7 +33,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QListWidget,
                                QPlainTextEdit, QPushButton, QSplitter,
                                QTableView, QTabWidget, QVBoxLayout, QWidget)
 
-from . import APP_NAME, __version__
+from . import APP_NAME, COPYRIGHT, LICENSE_NAME, __version__
 from .activity_tab import ActivityTab
 from .config_store import Store
 from .dialogs import ChildDialog, ask_password
@@ -342,7 +350,13 @@ class MainWindow(QMainWindow):
     def _about(self):
         QMessageBox.about(self, APP_NAME,
                           f"<b>{APP_NAME} {__version__}</b><br>Monitor and restrict web access on "
-                          "children's Ubuntu laptops using Squid.<br><br>Settings: "
+                          "children's Ubuntu laptops using Squid.<br><br>"
+                          f"{COPYRIGHT}<br>Licensed under the {LICENSE_NAME}. "
+                          "This program comes with ABSOLUTELY NO WARRANTY. It is free "
+                          "software: you may redistribute and modify it under the terms of "
+                          "that licence (<a href='https://www.gnu.org/licenses/gpl-3.0.html'>"
+                          "gnu.org/licenses/gpl-3.0</a>); anyone who distributes it must also "
+                          "provide the complete source code.<br><br>Settings: "
                           f"{self.store.path}")
 
     def closeEvent(self, ev):

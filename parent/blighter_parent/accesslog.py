@@ -8,6 +8,14 @@
 #   1763208001.456   0 127.0.0.1 TCP_DENIED/403 3870 CONNECT store.steampowered.com:443 - HIER_NONE/- text/html
 # into simple records, and summarise them per site for the Activity tab.
 # For HTTPS only the site name is visible (no SSL decryption), not the page.
+#
+# Copyright (C) 2026 Ways Property
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.  It is distributed WITHOUT ANY WARRANTY; see the
+# LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
 
 from dataclasses import dataclass

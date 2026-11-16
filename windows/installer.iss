@@ -7,9 +7,17 @@
 ; Settings (%APPDATA%\BlighterRestrictor) and saved passwords (Windows
 ; Credential Manager) are kept on uninstall.
 ; Built by windows\build_windows.ps1, which passes /DAppVersion=<ver>.
+;
+; Copyright (C) 2026 Ways Property
+; SPDX-License-Identifier: GPL-3.0-or-later
+; This program is free software: you can redistribute it and/or modify it
+; under the terms of the GNU General Public License as published by the Free
+; Software Foundation, either version 3 of the License, or (at your option)
+; any later version.  It is distributed WITHOUT ANY WARRANTY; see the
+; LICENSE file or <https://www.gnu.org/licenses/> for details.
 ; -----------------------------------------------------------------------------
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.1"
 #endif
 
 [Setup]
@@ -24,6 +32,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist
 OutputBaseFilename=BlighterRestrictor-Setup-{#AppVersion}
 SetupIconFile=blighter.ico
+LicenseFile=..\LICENSE
 UninstallDisplayIcon={app}\BlighterRestrictor.exe
 Compression=lzma2
 SolidCompression=yes
@@ -34,6 +43,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Files]
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "..\dist\BlighterRestrictor\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]

@@ -5,6 +5,14 @@
 # a thread pool so the window never freezes, and deliver the result or error
 # back on the GUI thread through a Qt signal.
 # Usage:  run_bg(function, on_ok=callback(result), on_err=callback(message))
+#
+# Copyright (C) 2026 Ways Property
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.  It is distributed WITHOUT ANY WARRANTY; see the
+# LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
 
 import traceback

@@ -6,6 +6,14 @@
 # (Squid running, firewall active, proxy locked, which user is filtered) and
 # the raw files - generated Squid rules, allow/block lists, squid.conf and
 # the firewall table.  "Reload Squid" re-reads the configuration on demand.
+#
+# Copyright (C) 2026 Ways Property
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.  It is distributed WITHOUT ANY WARRANTY; see the
+# LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
 
 from PySide6.QtCore import Signal
