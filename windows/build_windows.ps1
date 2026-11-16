@@ -22,7 +22,10 @@ if (-not (Test-Path .venv-win)) {
 $py = ".\.venv-win\Scripts\python.exe"
 & $py -m pip install --upgrade pip
 if ($LASTEXITCODE) { throw "pip failed" }
-& $py -m pip install "PySide6-Essentials>=6.6" "paramiko>=3.4" "keyring>=24" "pyinstaller>=6.5"
+# cryptography 50+ links python3t.dll, which PyInstaller does not bundle - stay below 50.
+& $py -m pip install "PySide6-Essentials>=6.6" "paramiko>=3.4" "cryptography>=44,<50" "keyring>=24" "pyinstaller>=6.5"
+if ($LASTEXITCODE) { throw "pip install failed" }
+& $py -m pip list
 
 # Same shared rules file the Linux packages use.
 Copy-Item common\domains.py parent\blighter_parent\domains.py -Force
@@ -36,6 +39,7 @@ if (-not (Test-Path $py3dll)) { throw "python3.dll not found in $base" }
 & $py -m PyInstaller --noconfirm --clean --windowed `
     --add-binary "$py3dll;." `
     --collect-binaries cryptography `
+    --hidden-import cryptography.hazmat.bindings._rust `
     --name BlighterRestrictor `
     --icon windows\blighter.ico `
     --paths parent `
