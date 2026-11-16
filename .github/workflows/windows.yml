@@ -29,12 +29,10 @@ jobs:
       - name: Self-test the built exe
         shell: pwsh
         run: |
-          $log = Join-Path $env:APPDATA "BlighterRestrictor\blighter-restrictor.log"
+          $dir = Join-Path $env:APPDATA "BlighterRestrictor"
           $p = Start-Process dist\BlighterRestrictor\BlighterRestrictor.exe -ArgumentList "--self-test" -PassThru
           $done = $p.WaitForExit(60000)
-          if (Test-Path $log) { Get-Content $log } else { Write-Host "no startup.log" }
-          $l2 = Join-Path $env:APPDATA "BlighterRestrictor\blighter-restrictor.log"
-          if (Test-Path $l2) { Get-Content $l2 }
+          if (Test-Path $dir) { Get-ChildItem $dir; Get-ChildItem $dir -Filter *.log | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName } } else { Write-Host "no settings folder" }
           if (-not $done) { $p.Kill(); throw "exe did not exit" }
           if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
           Write-Host "Self-test passed"
