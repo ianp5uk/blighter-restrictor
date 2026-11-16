@@ -245,12 +245,15 @@ if ($setPw) {
         $b2 = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p2))
         if ($b1 -ne $b2) { Write-Host "They do not match - try again."; continue }
         if ($b1.Length -lt 10) { Write-Host "Use at least 10 characters - this account has full control of the laptop."; continue }
-        break
+        try {
+            if ($user) { Set-LocalUser -Name $Admin -Password $p1 }
+            else { New-LocalUser -Name $Admin -Password $p1 -FullName "Blighter Restrictor" -Description "Used by the Blighter Restrictor parent app" | Out-Null }
+            break
+        } catch [Microsoft.PowerShell.Commands.InvalidPasswordException] {
+            Write-Host "Windows rejected that password.  On this PC it may need upper and lower case"
+            Write-Host "letters, a digit and a symbol, and it must not contain the word '$Admin'.  Try again."
+        } catch { Die "Could not set the password: $($_.Exception.Message)" }
     }
-    try {
-        if ($user) { Set-LocalUser -Name $Admin -Password $p1 }
-        else { New-LocalUser -Name $Admin -Password $p1 -FullName "Blighter Restrictor" -Description "Used by the Blighter Restrictor parent app" | Out-Null }
-    } catch { Die "Could not set the password: $($_.Exception.Message)" }
 }
 Set-LocalUser -Name $Admin -PasswordNeverExpires $true -AccountNeverExpires
 if ((Get-AdminSids) -notcontains (Get-LocalUser -Name $Admin).SID.Value) {

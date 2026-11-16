@@ -98,7 +98,7 @@ jobs:
               -Direction Outbound -Action Allow -Program $p.Path | Out-Null
             Write-Host "Allowed runner program $($p.Path)"
           }
-          "BLIGHTER_ADMIN_PASSWORD=Blighter-$(Get-Random)-Aa1!" | Out-File -Append $env:GITHUB_ENV
+          "BLIGHTER_ADMIN_PASSWORD=Parent-$(Get-Random)-Aa1!" | Out-File -Append $env:GITHUB_ENV
       - name: Install the child component
         shell: pwsh
         run: |
