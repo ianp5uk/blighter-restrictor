@@ -5,7 +5,7 @@ component (Ubuntu or Windows laptops), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.2.0
+# Blighter Restrictor 1.2.1
 
 Monitor and restrict your children's web access on their Ubuntu 26.04 or
 Windows 10/11 laptops.
@@ -46,7 +46,7 @@ Do this as an administrator on the child's laptop. The child's own account
 must **not** be an administrator.
 
 ```bash
-sudo apt install ./blighter-child_1.2.0_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.2.1_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
@@ -74,7 +74,7 @@ Notes:
 Use 64-bit Windows 10 or 11 (Home or Pro). Sign in to a **parent
 administrator account** on the laptop, not the child's.
 
-1. Copy `blighter-child-windows-1.2.0.zip` to the laptop and **unzip it**
+1. Copy `blighter-child-windows-1.2.1.zip` to the laptop and **unzip it**
    (right-click → *Extract All*). Don't run it from inside the zip.
 2. Double-click **Install Blighter Child.cmd** and accept the Windows prompt.
 3. Pick the child's account from the list, then choose a password (10+
@@ -82,6 +82,12 @@ administrator account** on the laptop, not the child's.
    this password in the parent app.
 
 Setup then:
+* **before changing anything else**, creates a Windows restore point called
+  *Before Blighter Restrictor*. It switches on System Protection for C: if it's
+  off. It also saves the laptop's current settings in
+  `C:\ProgramData\BlighterChild\state\pre-install.json`: firewall defaults,
+  browser proxy policies, the child's own proxy setting, and whether OpenSSH,
+  Squid and the `blighter` account already existed.
 * downloads and installs **Squid for Windows** (Diladele, Squid 7.8) if it's
   missing, and locks `C:\Squid` so only administrators can change it.
   Folders made at the root of C: are otherwise changeable by every signed-in
@@ -133,16 +139,35 @@ Notes for Windows:
   background service can't update while the filter is on. Windows Update,
   Defender and Edge updates still work.
 * Browsers show "managed by your organisation". That's the proxy policy.
-* To undo everything, run **Remove Blighter Child.cmd** (from the zip or from
-  `C:\ProgramData\BlighterChild`). Squid and OpenSSH stay installed. Remove them
-  in *Settings → Apps* and *Optional features* if you want.
+* **Pause Blighter Child.cmd** (in `C:\ProgramData\BlighterChild`) switches
+  filtering off without uninstalling. The firewall, browser policies and the
+  child's proxy go back to how they were before setup, and the self-repair task
+  is switched off. The parent app can still connect, and its Laptop tab shows
+  *PAUSED*. Use it to check whether a problem is caused by Blighter Restrictor.
+  **Resume Blighter Child.cmd** switches filtering back on.
+* **Remove Blighter Child.cmd** (from the zip or from
+  `C:\ProgramData\BlighterChild`) puts the laptop back as it was before setup:
+  * firewall defaults, the switched-off rules, browser policies and the child's
+    proxy setting are restored from the saved record
+  * networks that setup marked Private go back to Public
+  * anything setup added is removed: it deletes the `blighter` account and its
+    profile, stops, disables and uninstalls OpenSSH Server, uninstalls Squid,
+    and deletes `C:\ProgramData\BlighterChild`. It asks before each; the
+    default answer is yes. Anything that was there before setup is left as it
+    was.
+  * If anything still behaves differently, use System Restore and pick
+    *Before Blighter Restrictor*.
+* Emergency fix if the scripts are missing. In an administrator PowerShell, run
+  `Get-ScheduledTask -TaskPath "\Blighter Restrictor\" | Unregister-ScheduledTask -Confirm:$false`
+  then `Set-NetFirewallProfile -All -DefaultOutboundAction NotConfigured`.
+  This restores internet straight away.
 
 ## 2. Install the parent app
 
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.0_all.deb`, then start
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.1_all.deb`, then start
 *Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
 
-**Windows:** run `BlighterRestrictor-Setup-1.2.0.exe` (see "Building for
+**Windows:** run `BlighterRestrictor-Setup-1.2.1.exe` (see "Building for
 Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
 click *More info → Run anyway*.
 
@@ -231,7 +256,7 @@ on a Windows 10/11 PC instead:
    ```powershell
    powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
    ```
-4. Result: `dist\BlighterRestrictor-Setup-1.2.0.exe`. Install it on your wife's PC.
+4. Result: `dist\BlighterRestrictor-Setup-1.2.1.exe`. Install it on your wife's PC.
    (Without Inno Setup you get a runnable folder `dist\BlighterRestrictor\` instead.)
 
 ## Licence
@@ -267,7 +292,7 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `child-windows/blighter-system.ps1` | Windows whole-laptop firewall, proxy policies, self-repair task |
 | `child-windows/blighter-apply.py` / `.cmd` | Windows helper the app runs over SSH (same commands as Ubuntu's) |
 | `child-windows/squid.conf` | Managed Squid configuration for Squid for Windows |
-| `child-windows/*.cmd` | Double-click install / remove |
+| `child-windows/*.cmd` | Double-click install / pause / resume / remove |
 | `build-windows-child.sh` | Builds the Windows child zip |
 | `windows/` | Windows build script, installer definition, icon (parent app) |
 | `LICENSE` | GNU General Public License v3.0 |

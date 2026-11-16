@@ -5,21 +5,31 @@
 # network.  Safe to run again.  Normally started by "Install Blighter
 # Child.cmd" (which asks for administrator rights).  It:
 #   1. checks the child's account and WARNS if it is an administrator
-#   2. installs Squid for Windows (Diladele MSI) if missing, and locks its
-#      folder so only administrators can change it
-#   3. copies the helper and its private Python to C:\ProgramData\BlighterChild
-#      (locked the same way) and records the child's account (child.conf)
-#   4. creates the hidden "blighter" administrator account (password login
+#   2. copies the helper and its private Python to C:\ProgramData\BlighterChild
+#      (locked so only administrators can change it) and records the
+#      child's account (child.conf)
+#   3. BEFORE CHANGING ANYTHING ELSE: creates a Windows restore point
+#      ("Before Blighter Restrictor") and saves the laptop's current
+#      settings (state\pre-install.json) so removal can put them back
+#   4. installs Squid for Windows (Diladele MSI) if missing, and locks its
+#      folder the same way
+#   5. creates the hidden "blighter" administrator account (password login
 #      over SSH) that the parent app uses
-#   5. installs and starts Windows' own OpenSSH Server
-#   6. replaces squid.conf with the Blighter one (old file backed up)
-#   7. turns on the whole-laptop firewall, the proxy settings and the
+#   6. installs and starts Windows' own OpenSSH Server
+#   7. replaces squid.conf with the Blighter one (old file backed up)
+#   8. turns on the whole-laptop firewall, the proxy settings and the
 #      self-repair task (blighter-system.ps1 enable)
-#   8. offers to mark the current network as Private (needed for SSH)
+#   9. offers to mark the current network as Private (needed for SSH);
+#      the change is recorded so removal can undo it
+#
+# Removal (-Remove) puts the laptop back as it was before step 3: firewall,
+# proxy and browser settings, network types, and - if setup added them -
+# deletes the blighter account and stops and uninstalls OpenSSH Server and
+# Squid (it asks first; the defaults are "yes"), then deletes its own folder.
 #
 # Usage (PowerShell as administrator):
 #   blighter-setup.ps1 [-Child <username>] [-NoVoice] [-DnsServers "1.1.1.1 8.8.8.8"]
-#   blighter-setup.ps1 -Remove [-Yes]        undo everything (Squid stays installed)
+#   blighter-setup.ps1 -Remove [-Yes]        undo everything
 # -Yes answers every question with its default (for automated tests); the
 # blighter password is then taken from the BLIGHTER_ADMIN_PASSWORD
 # environment variable.
@@ -41,7 +51,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Version   = "1.2.0"
+$Version   = "1.2.1"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -50,6 +60,10 @@ $SquidPage = "https://www.diladele.com/squid/download.html"
 $SidAdmins = "S-1-5-32-544"
 $SidUsers  = "S-1-5-32-545"
 $SidSystem = "S-1-5-18"
+$StateDir  = Join-Path $Dest "state"
+$PreFile   = Join-Path $StateDir "pre-install.json"
+$NetFile   = Join-Path $StateDir "networks-changed.txt"
+$System    = Join-Path $Dest "blighter-system.ps1"
 
 function Say($m)  { Write-Host ""; Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "WARNING: $m" -ForegroundColor Yellow }
@@ -113,34 +127,125 @@ if (-not [Environment]::Is64BitOperatingSystem) { Die "Squid for Windows needs 6
 if ([Environment]::OSVersion.Version.Major -lt 10) { Die "Windows 10 or newer is needed." }
 
 # ----------------------------------------------------------------- removal ---
+function Get-SquidProductCodes {
+    foreach ($root in "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                      "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall") {
+        Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
+            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+            if ($p.DisplayName -eq "Squid" -and $_.PSChildName -match '^\{[0-9A-Fa-f-]+\}$') { $_.PSChildName }
+        }
+    }
+}
+
 if ($Remove) {
     Say "Removing Blighter Restrictor from this laptop"
-    $sys = Join-Path $Dest "blighter-system.ps1"
-    if (Test-Path $sys) { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sys disable }
+    $pre = $null
+    if (Test-Path $PreFile) {
+        $pre = Get-Content $PreFile -Raw | ConvertFrom-Json
+        Write-Host "Putting back the settings saved on $($pre.captured_at)."
+    } else {
+        Warn "No saved 'before' state was found - Windows defaults will be used instead."
+    }
+
+    Say "Firewall, proxy and browser settings"
+    if (Test-Path $System) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $System disable
+    } else {
+        Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+        Get-NetFirewallRule -Group "Blighter Restrictor" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+        Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction NotConfigured
+    }
+
+    Say "Network types"
+    if (Test-Path $NetFile) {
+        foreach ($line in Get-Content $NetFile) {
+            $alias, $cat = $line -split "`t", 2
+            $np = Get-NetConnectionProfile -InterfaceAlias $alias -ErrorAction SilentlyContinue
+            if ($np -and $cat) {
+                Set-NetConnectionProfile -InterfaceAlias $alias -NetworkCategory $cat -ErrorAction SilentlyContinue
+                Write-Host "  $alias set back to $cat"
+            }
+        }
+    } else { Write-Host "  No network types were changed by setup." }
+
+    Say "SSH server"
+    $sshd = Get-Service sshd -ErrorAction SilentlyContinue
+    if ($sshd) {
+        if ($pre -and $pre.sshd_exists) {
+            Set-Service sshd -StartupType $pre.sshd_start_type
+            if (-not $pre.sshd_running) { Stop-Service sshd -Force -ErrorAction SilentlyContinue }
+            Write-Host "OpenSSH Server was already installed before setup - left as it was ($($pre.sshd_start_type))."
+        } else {
+            Stop-Service sshd -Force -ErrorAction SilentlyContinue
+            Set-Service sshd -StartupType Disabled
+            Write-Host "OpenSSH Server stopped and disabled."
+            if (Ask "OpenSSH Server was installed by Blighter setup.  Uninstall it?" "y") {
+                $cap = Get-WindowsCapability -Online -Name "OpenSSH.Server*" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($cap -and $cap.State -eq "Installed") {
+                    try { Remove-WindowsCapability -Online -Name $cap.Name | Out-Null; Write-Host "OpenSSH Server uninstalled." }
+                    catch { Warn "Could not uninstall OpenSSH Server ($($_.Exception.Message)); it stays stopped and disabled." }
+                }
+            }
+            if (-not ($pre -and $pre.openssh_rule_exists)) {
+                Remove-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Say "Squid"
     $root = Get-SquidRoot
     if ($root) {
         $conf = Join-Path $root "etc\squid\squid.conf"
         $backup = Get-ChildItem (Join-Path $root "etc\squid") -Filter "squid.conf.pre-blighter-*" -ErrorAction SilentlyContinue |
                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($backup) { Copy-Item $backup.FullName $conf -Force; Write-Host "Restored $($backup.Name) -> squid.conf" }
-        Restart-Service squidsrv -ErrorAction SilentlyContinue
-        Write-Host "Squid for Windows is still installed (remove it in Settings > Apps if you wish)."
+        $installedBySetup = -not ($pre -and $pre.squid_installed)
+        if ($pre -and -not $pre.squid_installed -and (Ask "Squid was installed by Blighter setup.  Uninstall it?" "y")) {
+            Stop-Service squidsrv -Force -ErrorAction SilentlyContinue
+            foreach ($code in Get-SquidProductCodes) {
+                $p = Start-Process msiexec.exe -ArgumentList "/x $code /qn /norestart" -Wait -PassThru
+                if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) { Write-Host "Squid uninstalled." }
+                else { Warn "The Squid uninstaller returned code $($p.ExitCode) - remove 'Squid' in Settings > Apps." }
+            }
+            if (Test-Path $root) { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
+        } else {
+            Restart-Service squidsrv -ErrorAction SilentlyContinue
+            if ($installedBySetup) { Write-Host "Squid for Windows is still installed (remove 'Squid' in Settings > Apps if you wish)." }
+            else { Write-Host "Squid was installed before setup - left installed with its previous squid.conf." }
+        }
     }
+
+    Say "The '$Admin' account"
     if (Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue) {
-        if (Ask "Delete the '$Admin' administrator account too?") {
+        $ours = -not ($pre -and $pre.admin_exists)
+        if (Ask "Delete the '$Admin' administrator account?" $(if ($ours) { "y" } else { "n" })) {
+            $sid = (Get-LocalUser -Name $Admin).SID.Value
             Remove-LocalUser -Name $Admin
+            Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $sid } |
+                Remove-CimInstance -ErrorAction SilentlyContinue
+            Write-Host "Account '$Admin' and its profile deleted."
+        } else { Warn "Account '$Admin' kept - it is an administrator; change its password or delete it later." }
+        if (-not ($pre -and $pre.admin_hidden_value)) {
             Remove-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" -Name $Admin -ErrorAction SilentlyContinue
-            Write-Host "Account '$Admin' deleted (its profile folder in C:\Users may remain)."
-        } else { Write-Host "Account '$Admin' kept." }
+        }
     }
-    Write-Host ""
-    Write-Host "Done.  You can now delete the folder $Dest."
-    Write-Host "OpenSSH Server was left installed (Settings > System > Optional features)."
+
+    Say "Done"
+    Write-Host "If anything still behaves differently, use System Restore and pick the"
+    Write-Host "restore point 'Before Blighter Restrictor' (Start > 'Create a restore point' > System Restore)."
+    if (Test-Path $Dest) {
+        if (Ask "Delete the folder $Dest (helper, logs and saved state)?" "y") {
+            Set-Location $env:TEMP
+            # Deleted a few seconds after this script ends, as files in it are still in use now.
+            Start-Process cmd.exe -ArgumentList "/c ping -n 6 127.0.0.1 >nul & rmdir /s /q `"$Dest`"" -WindowStyle Hidden
+            Write-Host "The folder will be deleted in a few seconds."
+        }
+    }
     exit 0
 }
 
 # ------------------------------------------------------ 1. child account ---
-Say "1/8 The child's account"
+Say "1/9 The child's account"
 $locals = @(Get-LocalUser | Where-Object { $_.Enabled -and $_.Name -ne $Admin -and $_.Name -notin @("Administrator", "Guest", "DefaultAccount", "WDAGUtilityAccount") })
 if (-not $Child) {
     Write-Host "Accounts on this laptop:"
@@ -171,8 +276,55 @@ if ($isAdmin) {
     if (-not $Yes) { Read-Host "Press Enter to continue anyway, or Ctrl+C to stop" | Out-Null }
 }
 
-# ------------------------------------------------------------- 2. Squid ---
-Say "2/8 Squid for Windows"
+# --------------------------------------------------------- 2. helper files ---
+Say "2/9 Helper files in $Dest"
+if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest | Out-Null }
+Lock-Folder $Dest
+if ((Resolve-Path $Src).Path.TrimEnd('\') -ne (Resolve-Path $Dest).Path.TrimEnd('\')) {
+    foreach ($item in "blighter-apply.py", "blighter-apply.cmd", "blighter-system.ps1", "blighter-setup.ps1",
+                      "domains.py", "squid.conf", "python", "LICENSE.txt", "Remove Blighter Child.cmd",
+                      "Pause Blighter Child.cmd", "Resume Blighter Child.cmd") {
+        $from = Join-Path $Src $item
+        if (-not (Test-Path $from)) { Die "Missing file $item next to this script - unzip the whole package first." }
+        Copy-Item $from $Dest -Recurse -Force
+    }
+}
+Get-ChildItem $Dest -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+Lock-Folder $Dest
+$voice = if ($NoVoice) { "no" } else { "yes" }
+@"
+# Blighter Restrictor - which account on this laptop is the child's.
+# Written by blighter-setup.ps1 $Version.  On Windows the firewall filters the
+# whole laptop; CHILD_USER is used for the proxy setting and admin warnings.
+CHILD_USER="$Child"
+CHILD_SID="$childSid"
+# yes = allow outgoing UDP 50000-65535 (Discord voice/video calls)
+ALLOW_VOICE_UDP="$voice"
+"@ | Set-Content -Path (Join-Path $Dest "child.conf") -Encoding ASCII
+& (Join-Path $Dest "python\python.exe") -I -c "print('Bundled Python OK')"
+if ($LASTEXITCODE -ne 0) { Die "The bundled Python does not run on this laptop." }
+
+# ------------------------------------------- 3. restore point and backup ---
+Say "3/9 Restore point and a record of the current settings"
+if (-not (Test-Path $PreFile)) {
+    try {
+        # Windows allows one restore point per 24 hours unless told otherwise.
+        $srKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore"
+        Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+        New-ItemProperty -Path $srKey -Name SystemRestorePointCreationFrequency -Value 0 -PropertyType DWord -Force | Out-Null
+        Checkpoint-Computer -Description "Before Blighter Restrictor" -RestorePointType MODIFY_SETTINGS
+        Remove-ItemProperty -Path $srKey -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue
+        Write-Host "Restore point 'Before Blighter Restrictor' created."
+    } catch {
+        Warn "Could not create a restore point ($($_.Exception.Message)).  Removal will still put the settings back."
+        if (-not $Yes) { Read-Host "Press Enter to continue, or Ctrl+C to stop" | Out-Null }
+    }
+}
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $System capture
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $PreFile)) { Die "Could not save the current settings - nothing else has been changed." }
+
+# ------------------------------------------------------------- 4. Squid ---
+Say "4/9 Squid for Windows"
 $root = Get-SquidRoot
 if (-not $root) {
     Write-Host "Squid is not installed - downloading it from Diladele..."
@@ -194,35 +346,8 @@ Lock-Folder $root
 # The Squid log is written by the service (SYSTEM); the helper reads it as administrator.
 Write-Host "Squid folder locked: only administrators can change it."
 
-# --------------------------------------------------------- 3. helper files ---
-Say "3/8 Helper files in $Dest"
-if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest | Out-Null }
-Lock-Folder $Dest
-if ((Resolve-Path $Src).Path.TrimEnd('\') -ne (Resolve-Path $Dest).Path.TrimEnd('\')) {
-    foreach ($item in "blighter-apply.py", "blighter-apply.cmd", "blighter-system.ps1", "blighter-setup.ps1",
-                      "domains.py", "squid.conf", "python", "LICENSE.txt", "Remove Blighter Child.cmd") {
-        $from = Join-Path $Src $item
-        if (-not (Test-Path $from)) { Die "Missing file $item next to this script - unzip the whole package first." }
-        Copy-Item $from $Dest -Recurse -Force
-    }
-}
-Get-ChildItem $Dest -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
-Lock-Folder $Dest
-$voice = if ($NoVoice) { "no" } else { "yes" }
-@"
-# Blighter Restrictor - which account on this laptop is the child's.
-# Written by blighter-setup.ps1 $Version.  On Windows the firewall filters the
-# whole laptop; CHILD_USER is used for the proxy setting and admin warnings.
-CHILD_USER="$Child"
-CHILD_SID="$childSid"
-# yes = allow outgoing UDP 50000-65535 (Discord voice/video calls)
-ALLOW_VOICE_UDP="$voice"
-"@ | Set-Content -Path (Join-Path $Dest "child.conf") -Encoding ASCII
-& (Join-Path $Dest "python\python.exe") -I -c "print('Bundled Python OK')"
-if ($LASTEXITCODE -ne 0) { Die "The bundled Python does not run on this laptop." }
-
-# ------------------------------------------------------- 4. admin account ---
-Say "4/8 Administrator account '$Admin'"
+# ------------------------------------------------------- 5. admin account ---
+Say "5/9 Administrator account '$Admin'"
 $user = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
 $setPw = $true
 if ($user) {
@@ -264,8 +389,8 @@ $ul = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccoun
 if (-not (Test-Path $ul)) { New-Item -Path $ul -Force | Out-Null }
 New-ItemProperty -Path $ul -Name $Admin -Value 0 -PropertyType DWord -Force | Out-Null
 
-# --------------------------------------------------------------- 5. SSH ---
-Say "5/8 OpenSSH Server"
+# --------------------------------------------------------------- 6. SSH ---
+Say "6/9 OpenSSH Server"
 $cap = Get-WindowsCapability -Online -Name "OpenSSH.Server*" | Select-Object -First 1
 if ($cap -and $cap.State -ne "Installed") {
     Write-Host "Installing OpenSSH Server (this can take a few minutes)..."
@@ -280,8 +405,8 @@ if ((Test-Path $cfg) -and (Select-String -Path $cfg -Pattern '^\s*PasswordAuthen
 }
 Write-Host "SSH server running."
 
-# -------------------------------------------------------------- 6. squid.conf ---
-Say "6/8 Squid configuration"
+# -------------------------------------------------------------- 7. squid.conf ---
+Say "7/9 Squid configuration"
 $conf = Join-Path $root "etc\squid\squid.conf"
 if ((Test-Path $conf) -and -not ((Get-Content $conf -TotalCount 5) -match "Blighter Restrictor")) {
     $bak = "$conf.pre-blighter-" + (Get-Date -Format "yyyyMMdd-HHmmss")
@@ -310,13 +435,13 @@ Start-Sleep -Seconds 3
 if (-not (Get-Process squid -ErrorAction SilentlyContinue)) { Warn "squid.exe is not running yet - the service retries every 20 seconds." }
 Write-Host "Squid configured (DNS servers: $dnsList)."
 
-# --------------------------------------------- 7. firewall, proxy, repair ---
-Say "7/8 Firewall (whole laptop), proxy settings and self-repair task"
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "blighter-system.ps1") enable
+# --------------------------------------------- 8. firewall, proxy, repair ---
+Say "8/9 Firewall (whole laptop), proxy settings and self-repair task"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $System enable
 if ($LASTEXITCODE -ne 0) { Die "Firewall setup failed - see the messages above." }
 
-# ------------------------------------------------------- 8. network type ---
-Say "8/8 Network type"
+# ------------------------------------------------------- 9. network type ---
+Say "9/9 Network type"
 $profiles = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)
 foreach ($np in $profiles) {
     Write-Host ("  {0}: {1}" -f $np.Name, $np.NetworkCategory)
@@ -324,7 +449,8 @@ foreach ($np in $profiles) {
         Write-Host "  The parent app can only connect while Windows calls the network 'Private'."
         if (Ask "  Is '$($np.Name)' your HOME network?  Mark it Private?" "y") {
             Set-NetConnectionProfile -InterfaceIndex $np.InterfaceIndex -NetworkCategory Private
-            Write-Host "  '$($np.Name)' is now Private."
+            Add-Content -Path $NetFile -Value ("{0}`t{1}" -f $np.InterfaceAlias, "Public")
+            Write-Host "  '$($np.Name)' is now Private (removal sets it back)."
         }
     }
 }
@@ -341,3 +467,7 @@ Write-Host "Tip: reserve this address for the laptop in your router's DHCP setti
 Write-Host ""
 Write-Host "IMPORTANT: on Windows the filter applies to EVERY account on this laptop,"
 Write-Host "including yours.  The child should sign out and back in once."
+Write-Host ""
+Write-Host "If something stops working, run 'Pause Blighter Child.cmd' in $Dest"
+Write-Host "to switch filtering off without uninstalling (and 'Resume ...' to switch it on)."
+Write-Host "'Remove Blighter Child.cmd' there undoes everything."

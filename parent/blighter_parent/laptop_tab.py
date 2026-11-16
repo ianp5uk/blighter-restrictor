@@ -126,6 +126,9 @@ class LaptopTab(QWidget):
             adm = st.get("child_is_admin")
             f["child_is_admin"].setText("-" if adm is None else _flag(not adm, yes="No", no="YES"))
             notes = []
+            if st.get("paused"):
+                notes.append("Filtering is PAUSED on this laptop (Pause Blighter Child.cmd) - the "
+                             "child has normal internet access until 'Resume Blighter Child.cmd' is run.")
             if adm:
                 notes.append(ADMIN_WARNING)
             if win and st.get("network_profile") and "Private" not in st.get("network_profile", ""):
@@ -138,7 +141,8 @@ class LaptopTab(QWidget):
             f["squid_running"].setText(_flag(st.get("squid_running")))
             f["squid_version"].setText(st.get("squid_version", "?"))
             f["squid_conf_managed"].setText(_flag(st.get("squid_conf_managed")))
-            f["firewall_active"].setText(_flag(st.get("firewall_active"), no="No - child can bypass Squid"))
+            f["firewall_active"].setText(_flag(st.get("firewall_active"), no=(
+                "No - PAUSED" if st.get("paused") else "No - child can bypass Squid")))
             f["voice_udp"].setText("Yes" if st.get("voice_udp") == "yes" else "No")
             f["proxy_locked"].setText(_flag(st.get("proxy_locked")) + (
                 "  (browser policies; Windows proxy page locked)" if win else ""))

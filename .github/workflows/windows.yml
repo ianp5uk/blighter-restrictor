@@ -10,7 +10,9 @@
 #                    for real: Squid, firewall (direct web access blocked,
 #                    access through Squid allowed, blocked site refused),
 #                    the parent app's SSH connection code against Windows'
-#                    OpenSSH, the self-repair task, then removal.
+#                    OpenSSH, the self-repair task, pause / resume, then
+#                    removal - checking the laptop's settings afterwards
+#                    match those recorded before setup.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -90,14 +92,29 @@ jobs:
           $pw = ConvertTo-SecureString "Kid-$(Get-Random)-Aa1!" -AsPlainText -Force
           New-LocalUser -Name testkid -Password $pw | Out-Null
           # Keep the GitHub runner itself online once outgoing traffic is blocked.
-          # (Rules in the Blighter group survive; removal deletes them.)
+          # (Rules in the Blighter group survive enforcement; pause and removal delete them.)
+          @'
           $i = 0
           foreach ($p in Get-Process -Name Runner.Listener, Runner.Worker -ErrorAction SilentlyContinue) {
             $i++
+            Remove-NetFirewallRule -Name "BR-CI-Runner-$i" -ErrorAction SilentlyContinue
             New-NetFirewallRule -Name "BR-CI-Runner-$i" -DisplayName "CI runner $i" -Group "Blighter Restrictor" `
               -Direction Outbound -Action Allow -Program $p.Path | Out-Null
             Write-Host "Allowed runner program $($p.Path)"
           }
+          '@ | Set-Content "$env:RUNNER_TEMP\runner-rules.ps1"
+          & "$env:RUNNER_TEMP\runner-rules.ps1"
+          # A browser policy that existed before setup - removal must put it back.
+          New-Item -Path HKLM:\SOFTWARE\Policies\Google\Chrome -Force | Out-Null
+          New-ItemProperty -Path HKLM:\SOFTWARE\Policies\Google\Chrome -Name ProxySettings -Value "PRE-EXISTING" -Force | Out-Null
+          # Record the "before" state for the final comparison.
+          $before = [ordered]@{
+            profiles = @(Get-NetFirewallProfile -PolicyStore PersistentStore | ForEach-Object { "$($_.Name)=$($_.Enabled)/$($_.DefaultOutboundAction)" })
+            outbound_allow_on = @(Get-NetFirewallRule -Direction Outbound -Action Allow -Enabled True | Where-Object { $_.Group -ne "Blighter Restrictor" }).Count
+            sshd = [bool](Get-Service sshd -ErrorAction SilentlyContinue)
+            squid = (Test-Path C:\Squid)
+          }
+          $before | ConvertTo-Json | Tee-Object "$env:RUNNER_TEMP\before.json"
           "BLIGHTER_ADMIN_PASSWORD=Parent-$(Get-Random)-Aa1!" | Out-File -Append $env:GITHUB_ENV
       - name: Install the child component
         shell: pwsh
@@ -164,11 +181,54 @@ jobs:
           $p = Get-NetFirewallProfile -Profile Public
           if ($p.DefaultOutboundAction -ne "Block") { throw "Enforce task did not repair the firewall" }
           Write-Host "OK: firewall repaired by the scheduled task"
-      - name: Remove
+      - name: Pause and resume
+        shell: pwsh
+        run: |
+          $sys = "C:\ProgramData\BlighterChild\blighter-system.ps1"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sys pause
+          if ($LASTEXITCODE) { throw "pause failed" }
+          & "$env:RUNNER_TEMP\runner-rules.ps1"
+          Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
+          Write-Host "OK: paused - direct web access works"
+          $v = (Get-ItemProperty HKLM:\SOFTWARE\Policies\Google\Chrome).ProxySettings
+          if ($v -ne "PRE-EXISTING") { throw "pause did not restore the earlier Chrome policy ($v)" }
+          $st = & C:\ProgramData\BlighterChild\blighter-apply.cmd status | ConvertFrom-Json
+          if (-not $st.paused -or $st.firewall_active) { throw "status should report paused" }
+          if ((Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -TaskName Enforce).State -ne "Disabled") { throw "Enforce task not disabled" }
+          Write-Host "OK: paused state reported; Enforce task disabled"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sys resume
+          if ($LASTEXITCODE) { throw "resume failed" }
+          $direct = $true
+          try { Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 15 | Out-Null } catch { $direct = $false }
+          if ($direct) { throw "resume did not block direct access" }
+          $st = & C:\ProgramData\BlighterChild\blighter-apply.cmd status | ConvertFrom-Json
+          if ($st.paused -or -not $st.firewall_active) { throw "status after resume" }
+          Write-Host "OK: resumed - direct web access blocked again"
+      - name: Remove and compare with the state before setup
         if: always()
         shell: pwsh
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\BlighterChild\blighter-setup.ps1 -Remove -Yes
-          Get-NetFirewallProfile | Format-Table Name, DefaultOutboundAction
+          Start-Sleep -Seconds 15
+          $before = Get-Content "$env:RUNNER_TEMP\before.json" -Raw | ConvertFrom-Json
+          $bad = @()
+          $profiles = @(Get-NetFirewallProfile -PolicyStore PersistentStore | ForEach-Object { "$($_.Name)=$($_.Enabled)/$($_.DefaultOutboundAction)" })
+          if (($profiles -join ",") -ne ($before.profiles -join ",")) { $bad += "firewall profiles: $($profiles -join ',') vs $($before.profiles -join ',')" }
+          $on = @(Get-NetFirewallRule -Direction Outbound -Action Allow -Enabled True | Where-Object { $_.Group -ne "Blighter Restrictor" }).Count
+          if ($on -ne $before.outbound_allow_on) { $bad += "outgoing allow rules on: $on vs $($before.outbound_allow_on)" }
+          if (Get-NetFirewallRule -Group "Blighter Restrictor" -ErrorAction SilentlyContinue) { $bad += "Blighter firewall rules left" }
+          if (Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -ErrorAction SilentlyContinue) { $bad += "scheduled tasks left" }
+          if (Get-LocalUser blighter -ErrorAction SilentlyContinue) { $bad += "blighter account left" }
+          $sshd = Get-Service sshd -ErrorAction SilentlyContinue
+          if (-not $before.sshd -and $sshd -and ($sshd.Status -eq "Running" -or "$($sshd.StartType)" -ne "Disabled")) { $bad += "sshd still running/enabled: $($sshd.Status) $($sshd.StartType)" }
+          if (-not $before.sshd -and (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue | Where-Object Enabled -eq "True")) { $bad += "OpenSSH firewall rule left on" }
+          if (-not $before.squid -and (Test-Path C:\Squid\bin\squid.exe)) { $bad += "Squid still installed" }
+          $v = (Get-ItemProperty HKLM:\SOFTWARE\Policies\Google\Chrome -ErrorAction SilentlyContinue).ProxySettings
+          if ($v -ne "PRE-EXISTING") { $bad += "Chrome policy not restored ($v)" }
+          if (Get-ItemProperty HKLM:\SOFTWARE\Policies\Microsoft\Edge -Name ProxySettings -ErrorAction SilentlyContinue) { $bad += "Edge policy left" }
+          if (Test-Path HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Proxy) { $bad += "Firefox policy left" }
+          if (Test-Path C:\ProgramData\BlighterChild) { $bad += "C:\ProgramData\BlighterChild left" }
           Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
           Write-Host "OK: direct web access works again after removal"
+          if ($bad) { $bad | ForEach-Object { Write-Host "NOT RESTORED: $_" }; throw "$($bad.Count) difference(s) after removal" }
+          Write-Host "OK: laptop settings match the state recorded before setup"

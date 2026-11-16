@@ -43,7 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import domains  # noqa: E402  (shared validation, same file as the parent app)
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 PLATFORM = "windows"
 SERVICE = "squidsrv"            # service name used by Diladele's installer
 CHILD_CONF = os.path.join(HERE, "child.conf")
@@ -273,6 +273,7 @@ def cmd_status():
         "child_is_admin": sysst.get("child_is_admin"),
         "other_admins": sysst.get("other_admins", []),
         "network_profile": sysst.get("network_profile", "?"),
+        "paused": bool(sysst.get("paused")),
         "warnings": sysst.get("warnings", []),
     })
 

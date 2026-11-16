@@ -37,7 +37,7 @@ import sys
 sys.path.insert(0, "/usr/lib/blighter-child")
 import domains  # noqa: E402  (shared validation, same file as the parent app)
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 BASE = "/etc/squid/blighter"
 MODE_FILE = os.path.join(BASE, "mode")
 ALLOW_FILE = os.path.join(BASE, "allow.list")

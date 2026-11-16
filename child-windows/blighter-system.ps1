@@ -11,22 +11,32 @@
 #     (DNS, DHCP, time, Windows Update, Defender, network status check),
 #     ping, and - unless switched off - UDP 50000-65535 (Discord voice/video).
 #   * Every other "allow outgoing" firewall rule (Store apps, games, Xbox...)
-#     is switched off; their names are recorded so "disable" can restore them.
+#     is switched off; their names are recorded so they can be switched on again.
 #   * Incoming SSH (port 22) is allowed only from the local subnet and only
 #     when Windows calls the network "Private" (set your home Wi-Fi to Private).
 #   * The child's own proxy setting, Windows' proxy page lock and the Edge,
 #     Chrome and Firefox proxy policies all point at Squid (127.0.0.1:3128).
 #
+# Before the first change, "capture" saves how the laptop was set up
+# (state\pre-install.json: firewall defaults, browser proxy policies, the
+# child's own proxy setting, whether OpenSSH / Squid / the blighter account
+# already existed).  "pause" and "disable" put back exactly that.
+#
 # Actions:
+#   capture   save the "before" state (only the first time; never overwritten)
 #   enable    apply everything above and create the scheduled tasks
 #   enforce   re-check and repair (run by the "Enforce" task every 10 minutes,
-#             at start-up and at every log-on, as SYSTEM)
-#   disable   undo everything (firewall back to Windows defaults, rules that
-#             were switched off are switched back on, policies removed)
+#             at start-up and at every log-on, as SYSTEM); does nothing while paused
+#   pause     switch filtering off but leave everything installed: firewall,
+#             browser policies and the child's proxy back to their "before"
+#             state, self-repair task switched off.  SSH from the home network
+#             keeps working so the parent app can still connect.
+#   resume    switch filtering back on after "pause"
+#   disable   undo everything this script did (used by blighter-setup.ps1 -Remove)
 #   status    print a JSON summary (used by blighter-apply.py "status")
 #
 # Usage (as administrator):
-#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 enable|enforce|disable|status
+#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|pause|resume|disable|status
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -36,13 +46,16 @@
 # any later version.  It is distributed WITHOUT ANY WARRANTY; see the
 # LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
-param([Parameter(Mandatory = $true)][ValidateSet("enable", "enforce", "disable", "status")][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "status")][string]$Action)
 
 $ErrorActionPreference = "Stop"
 $Here       = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ChildConf  = Join-Path $Here "child.conf"
 $StateDir   = Join-Path $Here "state"
 $DisabledDb = Join-Path $StateDir "disabled-rules.txt"
+$PreFile    = Join-Path $StateDir "pre-install.json"
+$PausedFlag = Join-Path $StateDir "paused"
+$SshRuleWin = "OpenSSH-Server-In-TCP"
 $Group      = "Blighter Restrictor"
 $Proxy      = "127.0.0.1:3128"
 $TaskPath   = "\Blighter Restrictor\"
@@ -130,7 +143,7 @@ function Get-SshRule {
 function Get-OtherOutboundAllowRules {
     # Enabled "allow outgoing" rules that are not ours and not Core Networking.
     Get-NetFirewallRule -Direction Outbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
-        Where-Object { $_.Group -ne $Group -and $_.Group -ne $CoreGroup -and $_.DisplayGroup -ne "Core Networking" }
+        Where-Object { $_.Group -ne $Group -and $_.Group -ne $CoreGroup -and $_.DisplayGroup -ne "Core Networking" -and $_.Name -ne $SshRuleWin }
 }
 
 function Disable-OtherOutboundRules {
@@ -156,11 +169,9 @@ function Enable-Firewall([bool]$voice, [bool]$force = $true) {
     if (-not $voice) { Remove-NetFirewallRule -Name "BR-Voice" -ErrorAction SilentlyContinue }
     Set-BlighterRule (Get-SshRule) "Inbound" $force
     # Windows' own OpenSSH rule allows port 22 from anywhere on every profile - ours replaces it.
-    Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Enabled -eq "True" } | ForEach-Object {
-            Set-NetFirewallRule -Name $_.Name -Enabled False
-            Add-Content -Path $DisabledDb -Value $_.Name
-        }
+    # (Not recorded with the others: removal restores it from the "before" state.)
+    Get-NetFirewallRule -Name $SshRuleWin -ErrorAction SilentlyContinue |
+        Where-Object { $_.Enabled -eq "True" } | ForEach-Object { Set-NetFirewallRule -Name $_.Name -Enabled False }
     Disable-OtherOutboundRules
     Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True -DefaultOutboundAction Block
 }
@@ -182,15 +193,37 @@ function Test-FirewallOk([bool]$voice) {
     return ,$problems
 }
 
-function Disable-Firewall {
-    Get-NetFirewallRule -Group $Group -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+function Restore-FirewallDefaults($pre) {
+    # Outgoing default and on/off state per profile, as they were before setup.
+    foreach ($name in "Domain", "Private", "Public") {
+        $was = $null
+        if ($pre) { $was = @($pre.profiles) | Where-Object { $_.Name -eq $name } | Select-Object -First 1 }
+        if ($was) {
+            Set-NetFirewallProfile -Profile $name -Enabled $was.Enabled -DefaultOutboundAction $was.DefaultOutboundAction
+        } else {
+            Set-NetFirewallProfile -Profile $name -DefaultOutboundAction NotConfigured
+        }
+    }
+}
+
+function Enable-RecordedRules {
+    # Switch back on the "allow outgoing" rules this script switched off.
     if (Test-Path $DisabledDb) {
         foreach ($n in Get-Content $DisabledDb | Sort-Object -Unique) {
             Set-NetFirewallRule -Name $n -Enabled True -ErrorAction SilentlyContinue
         }
         Remove-Item $DisabledDb -Force
     }
-    Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction NotConfigured
+}
+
+function Disable-Firewall($pre) {
+    Get-NetFirewallRule -Group $Group -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Enable-RecordedRules
+    # Windows' own SSH rule: back on only if it was on before setup.
+    if ($pre -and $pre.openssh_rule_enabled) {
+        Set-NetFirewallRule -Name $SshRuleWin -Enabled True -ErrorAction SilentlyContinue
+    }
+    Restore-FirewallDefaults $pre
 }
 
 # -------------------------------------------------------------------- proxy ---
@@ -219,10 +252,48 @@ function Enable-ProxyPolicies {
     Set-RegValue $IeLockKey "Proxy" 1 "DWord"
 }
 
-function Disable-ProxyPolicies {
-    foreach ($k in $PolicyKeys.Keys) { Remove-ItemProperty -Path $k -Name $PolicyKeys[$k] -ErrorAction SilentlyContinue }
+function Get-RegValues($path) {
+    # All values of a key as name -> @{type; data}, binary data as base64; $null if no key.
+    if (-not (Test-Path $path)) { return $null }
+    $key = Get-Item -Path $path
+    $vals = [ordered]@{}
+    foreach ($n in $key.GetValueNames()) {
+        $kind = $key.GetValueKind($n).ToString()
+        $data = $key.GetValue($n, $null, "DoNotExpandEnvironmentNames")
+        if ($kind -eq "Binary") { $data = [Convert]::ToBase64String([byte[]]$data) }
+        $vals[$n] = [ordered]@{ type = $kind; data = $data }
+    }
+    return $vals
+}
+
+function Set-SavedValue($path, [string]$name, $saved) {
+    # Put one value back as saved by Get-RegValues ($null = it did not exist).
+    if ($null -eq $saved) { Remove-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue; return }
+    $data = $saved.data
+    if ($saved.type -eq "Binary") { $data = [Convert]::FromBase64String($data) }
+    if ($saved.type -eq "MultiString") { $data = [string[]]@($data) }
+    Set-RegValue $path $name $data $saved.type
+}
+
+function Get-Saved($vals, [string]$name) {
+    if ($null -eq $vals) { return $null }
+    $p = $vals.PSObject.Properties[$name]
+    if ($p) { return $p.Value } else { return $null }
+}
+
+function Restore-ProxyPolicies($pre) {
+    foreach ($k in $PolicyKeys.Keys) {
+        $saved = $null
+        if ($pre) { $saved = Get-Saved $pre.policies.($k) $PolicyKeys[$k] }
+        Set-SavedValue $k $PolicyKeys[$k] $saved
+    }
     Remove-Item -Path $FirefoxKey -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path $IeLockKey -Name "Proxy" -ErrorAction SilentlyContinue
+    if ($pre -and $pre.policies.($FirefoxKey)) {
+        foreach ($p in $pre.policies.($FirefoxKey).PSObject.Properties) { Set-SavedValue $FirefoxKey $p.Name $p.Value }
+    }
+    $savedLock = $null
+    if ($pre) { $savedLock = Get-Saved $pre.policies.($IeLockKey) "Proxy" }
+    Set-SavedValue $IeLockKey "Proxy" $savedLock
 }
 
 function Test-ProxyPolicies {
@@ -257,7 +328,7 @@ function Close-ChildHive([bool]$loadedByUs) {
     }
 }
 
-function Set-ChildProxy([string]$sid, [bool]$on) {
+function Set-ChildProxy([string]$sid, [bool]$on, $pre = $null) {
     $loaded = $false
     $hive = Get-ChildHive $sid ([ref]$loaded)
     if (-not $hive) { return "unavailable" }
@@ -277,14 +348,73 @@ function Set-ChildProxy([string]$sid, [bool]$on) {
             }
             return "set"
         } else {
-            if ($cur.ProxyServer -eq $Proxy) {
+            # Put back exactly what the child had before setup.
+            $saved = $null
+            if ($pre) { $saved = $pre.child_proxy }
+            if ($saved -and $saved.captured) {
+                foreach ($n in "ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL") {
+                    Set-SavedValue $k $n (Get-Saved $saved.settings $n)
+                }
+                if (-not (Test-Path "$k\Connections")) { New-Item -Path "$k\Connections" -Force | Out-Null }
+                foreach ($n in "DefaultConnectionSettings", "SavedLegacySettings") {
+                    Set-SavedValue "$k\Connections" $n (Get-Saved $saved.connections $n)
+                }
+            } elseif ($cur.ProxyServer -eq $Proxy) {
                 Set-RegValue $k "ProxyEnable" 0 "DWord"
                 Remove-ItemProperty -Path $k -Name "ProxyServer", "ProxyOverride" -ErrorAction SilentlyContinue
                 Remove-ItemProperty -Path "$k\Connections" -Name "DefaultConnectionSettings", "SavedLegacySettings" -ErrorAction SilentlyContinue
             }
-            return "cleared"
+            return "restored"
         }
     } finally { Close-ChildHive $loaded }
+}
+
+function Get-ChildProxyState([string]$sid) {
+    $loaded = $false
+    $hive = Get-ChildHive $sid ([ref]$loaded)
+    if (-not $hive) { return [ordered]@{ captured = $false } }
+    try {
+        $k = "$hive\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        $all = Get-RegValues $k
+        $settings = [ordered]@{}
+        foreach ($n in "ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL") {
+            if ($all -and $all.Contains($n)) { $settings[$n] = $all[$n] }
+        }
+        return [ordered]@{ captured = $true; settings = $settings; connections = (Get-RegValues "$k\Connections") }
+    } finally { Close-ChildHive $loaded }
+}
+
+function Save-PreState($conf) {
+    # Called once, before setup changes anything.  Never overwritten.
+    if (Test-Path $PreFile) { Write-BLog "Earlier 'before' state kept ($PreFile)."; return }
+    if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
+    $sshRule = Get-NetFirewallRule -Name $SshRuleWin -ErrorAction SilentlyContinue
+    $sshd = Get-Service -Name sshd -ErrorAction SilentlyContinue
+    $policies = [ordered]@{}
+    foreach ($k in @($PolicyKeys.Keys) + $FirefoxKey + $IeLockKey) { $policies[$k] = Get-RegValues $k }
+    $ul = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
+    $state = [ordered]@{
+        captured_at          = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        profiles             = @(Get-NetFirewallProfile -PolicyStore PersistentStore | ForEach-Object {
+                                   [ordered]@{ Name = $_.Name; Enabled = "$($_.Enabled)"; DefaultOutboundAction = "$($_.DefaultOutboundAction)" } })
+        openssh_rule_exists  = [bool]$sshRule
+        openssh_rule_enabled = [bool]($sshRule -and $sshRule.Enabled -eq "True")
+        sshd_exists          = [bool]$sshd
+        sshd_start_type      = if ($sshd) { "$($sshd.StartType)" } else { $null }
+        sshd_running         = [bool]($sshd -and $sshd.Status -eq "Running")
+        squid_installed      = (Test-Path $SquidExe)
+        admin_exists         = [bool](Get-LocalUser -Name "blighter" -ErrorAction SilentlyContinue)
+        admin_hidden_value   = [bool](Get-ItemProperty -Path $ul -Name "blighter" -ErrorAction SilentlyContinue)
+        policies             = $policies
+        child_proxy          = (Get-ChildProxyState $conf.CHILD_SID)
+    }
+    $state | ConvertTo-Json -Depth 8 | Set-Content -Path $PreFile -Encoding UTF8
+    Write-BLog "Saved the laptop's 'before' state to $PreFile."
+}
+
+function Read-PreState {
+    if (Test-Path $PreFile) { return (Get-Content $PreFile -Raw | ConvertFrom-Json) }
+    return $null
 }
 
 # ------------------------------------------------------------ admin checks ---
@@ -354,19 +484,51 @@ function Confirm-Services {
 $conf  = Read-ChildConf
 $voice = $conf.ALLOW_VOICE_UDP -ne "no"
 
+function Start-Filtering {
+    Enable-Firewall $voice
+    Enable-ProxyPolicies
+    $r = Set-ChildProxy $conf.CHILD_SID $true
+    if ($r -eq "unavailable") {
+        Write-BLog "The child's proxy setting will be applied when they first log on (their profile does not exist yet)."
+    }
+    Register-Tasks
+    Confirm-Services
+}
+
+function Stop-Filtering($pre) {
+    # Everything back to "before", except our inbound SSH rule (parent app access).
+    Get-NetFirewallRule -Group $Group -Direction Outbound -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Enable-RecordedRules
+    Restore-FirewallDefaults $pre
+    Restore-ProxyPolicies $pre
+    Set-ChildProxy $conf.CHILD_SID $false $pre | Out-Null
+}
+
 switch ($Action) {
+    "capture" {
+        Save-PreState $conf
+    }
     "enable" {
-        Enable-Firewall $voice
-        Enable-ProxyPolicies
-        $r = Set-ChildProxy $conf.CHILD_SID $true
-        if ($r -eq "unavailable") {
-            Write-BLog "The child's proxy setting will be applied when they first log on (their profile does not exist yet)."
-        }
-        Register-Tasks
-        Confirm-Services
+        if (-not (Test-Path $PreFile)) { Save-PreState $conf }
+        Remove-Item $PausedFlag -Force -ErrorAction SilentlyContinue
+        Start-Filtering
         Write-BLog "Blighter firewall and proxy enabled."
     }
+    "resume" {
+        Remove-Item $PausedFlag -Force -ErrorAction SilentlyContinue
+        Start-Filtering
+        Write-BLog "Filtering RESUMED."
+    }
+    "pause" {
+        $pre = Read-PreState
+        if (-not $pre) { Write-BLog "WARNING: no saved 'before' state - using Windows defaults." }
+        Get-ScheduledTask -TaskPath $TaskPath -TaskName "Enforce" -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
+        Stop-Filtering $pre
+        Set-Content -Path $PausedFlag -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        Write-BLog "Filtering PAUSED (run resume to switch it back on)."
+    }
     "enforce" {
+        if (Test-Path $PausedFlag) { return }
         # Each check is separate so one failure does not stop the others.
         try {
             $problems = Test-FirewallOk $voice
@@ -383,15 +545,20 @@ switch ($Action) {
         try { Confirm-Services } catch { Write-BLog "ERROR (services): $($_.Exception.Message)" }
     }
     "disable" {
+        $pre = Read-PreState
+        if (-not $pre) { Write-BLog "WARNING: no saved 'before' state - using Windows defaults." }
         Unregister-Tasks
-        Disable-Firewall
-        Disable-ProxyPolicies
-        Set-ChildProxy $conf.CHILD_SID $false | Out-Null
-        Write-BLog "Blighter firewall and proxy removed."
+        Disable-Firewall $pre
+        Restore-ProxyPolicies $pre
+        Set-ChildProxy $conf.CHILD_SID $false $pre | Out-Null
+        Remove-Item $PausedFlag -Force -ErrorAction SilentlyContinue
+        Write-BLog "Blighter firewall and proxy removed; previous settings restored."
     }
     "status" {
         $ErrorActionPreference = "Continue"
+        $paused = Test-Path $PausedFlag
         $problems = Test-FirewallOk $voice
+        if ($paused) { $problems = @("Filtering is PAUSED since " + (Get-Content $PausedFlag -TotalCount 1)) + $problems }
         $warnings = @()
         $adminSids = @(Get-AdminSids)
         $childAdmin = $null
@@ -422,6 +589,7 @@ switch ($Action) {
         if ($problems.Count) { $lines += ""; $lines += "Problems:"; $problems | ForEach-Object { $lines += "  $_" } }
         $osv = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue)
         [pscustomobject]@{
+            paused          = $paused
             firewall_active = ($problems.Count -eq 0)
             firewall_rules  = ($lines -join "`n")
             proxy_locked    = (Test-ProxyPolicies)
