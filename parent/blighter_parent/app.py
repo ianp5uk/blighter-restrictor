@@ -343,14 +343,16 @@ class MainWindow(QMainWindow):
 
         def ok(st):
             self.say(f"{c.name}: connected - Squid {'running' if st.get('squid_running') else 'NOT running'}, "
-                     f"firewall {'active' if st.get('firewall_active') else 'NOT active'}.")
+                     f"firewall {'active' if st.get('firewall_active') else 'NOT active'}"
+                     + (".  WARNING: the child is an administrator on that laptop."
+                        if st.get("child_is_admin") else "."))
 
         run_bg(lambda: self.remotes.get(c).status(), ok, self.say)
 
     def _about(self):
         QMessageBox.about(self, APP_NAME,
                           f"<b>{APP_NAME} {__version__}</b><br>Monitor and restrict web access on "
-                          "children's Ubuntu laptops using Squid.<br><br>"
+                          "children's Ubuntu and Windows laptops using Squid.<br><br>"
                           f"{COPYRIGHT}<br>Licensed under the {LICENSE_NAME}. "
                           "This program comes with ABSOLUTELY NO WARRANTY. It is free "
                           "software: you may redistribute and modify it under the terms of "

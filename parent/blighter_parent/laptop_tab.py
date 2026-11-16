@@ -3,9 +3,12 @@
 #
 # Purpose: show exactly what is in force on the child's laptop, read back
 # from the laptop itself (not what the app last sent): the health checks
-# (Squid running, firewall active, proxy locked, which user is filtered) and
-# the raw files - generated Squid rules, allow/block lists, squid.conf and
-# the firewall table.  "Reload Squid" re-reads the configuration on demand.
+# (system, Squid running, firewall active, proxy locked, which user is
+# filtered, whether the child is an administrator) and the raw files -
+# generated Squid rules, allow/block lists, squid.conf and the firewall
+# rules.  "Reload Squid" re-reads the configuration on demand.
+# Ubuntu and Windows laptops report the same fields; on Windows the
+# firewall covers the whole laptop rather than only the child's account.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -22,7 +25,7 @@ from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel,
                                QPlainTextEdit, QPushButton, QTabWidget,
                                QVBoxLayout, QWidget)
 
-from .shared import domains
+from .shared import ADMIN_WARNING, domains, same_user
 from .workers import run_bg
 
 MODE_NAMES = {domains.MODE_BLOCKLIST: "Allow all, block some",
@@ -44,13 +47,18 @@ class LaptopTab(QWidget):
 
         self.fields = {}
         form = QFormLayout()
-        for key, label in (("child_user", "Filtered user"), ("mode", "Mode in force"),
+        for key, label in (("platform", "Laptop system"), ("child_user", "Filtered user"),
+                           ("child_is_admin", "Child is administrator"), ("mode", "Mode in force"),
                            ("squid_running", "Squid running"), ("squid_version", "Squid version"),
                            ("squid_conf_managed", "squid.conf managed"),
                            ("firewall_active", "Firewall active"), ("voice_udp", "Discord voice allowed"),
                            ("proxy_locked", "Desktop proxy locked"), ("helper_version", "Helper version")):
             self.fields[key] = QLabel("-")
             form.addRow(label + ":", self.fields[key])
+        self.warning = QLabel("")
+        self.warning.setWordWrap(True)
+        self.warning.setStyleSheet("color:#c0392b")
+        form.addRow(self.warning)
         health = QGroupBox("Laptop health")
         health.setLayout(form)
 
@@ -89,6 +97,7 @@ class LaptopTab(QWidget):
         self.child = child
         for f in self.fields.values():
             f.setText("-")
+        self.warning.setText("")
         for t in self.texts.values():
             t.setPlainText("")
         self._enable(child is not None)
@@ -108,16 +117,31 @@ class LaptopTab(QWidget):
             if child is not self.child:
                 return
             f = self.fields
+            win = st.get("platform") == "windows"
+            f["platform"].setText(st.get("os_version") or ("Windows" if win else "Ubuntu"))
             f["child_user"].setText(f"<b>{st.get('child_user')}</b>" + (
-                "" if st.get("child_user") == child.child_user else
+                "  (Windows: the firewall filters every account on this laptop)" if win else "") + (
+                "" if same_user(st.get("child_user"), child.child_user, st.get("platform")) else
                 f"  <span style='color:#c0392b'>(app expects '{child.child_user}')</span>"))
+            adm = st.get("child_is_admin")
+            f["child_is_admin"].setText("-" if adm is None else _flag(not adm, yes="No", no="YES"))
+            notes = []
+            if adm:
+                notes.append(ADMIN_WARNING)
+            if win and st.get("network_profile") and "Private" not in st.get("network_profile", ""):
+                notes.append("Windows does not call the laptop's current network 'Private', so the "
+                             "app may not reach it next time.  Set the home Wi-Fi to Private in "
+                             "Windows' network settings.")
+            notes += [w for w in st.get("warnings", []) if "ADMINISTRATOR" not in w]
+            self.warning.setText("\n\n".join(notes))
             f["mode"].setText(MODE_NAMES.get(cfg.get("mode"), cfg.get("mode")))
             f["squid_running"].setText(_flag(st.get("squid_running")))
             f["squid_version"].setText(st.get("squid_version", "?"))
             f["squid_conf_managed"].setText(_flag(st.get("squid_conf_managed")))
             f["firewall_active"].setText(_flag(st.get("firewall_active"), no="No - child can bypass Squid"))
             f["voice_udp"].setText("Yes" if st.get("voice_udp") == "yes" else "No")
-            f["proxy_locked"].setText(_flag(st.get("proxy_locked")))
+            f["proxy_locked"].setText(_flag(st.get("proxy_locked")) + (
+                "  (browser policies; Windows proxy page locked)" if win else ""))
             f["helper_version"].setText(st.get("helper_version", "?"))
             self.texts["rules_conf"].setPlainText(cfg.get("rules_conf", ""))
             self.texts["allow"].setPlainText("\n".join(cfg.get("allow", [])))

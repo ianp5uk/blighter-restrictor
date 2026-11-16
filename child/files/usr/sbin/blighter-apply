@@ -37,7 +37,7 @@ import sys
 sys.path.insert(0, "/usr/lib/blighter-child")
 import domains  # noqa: E402  (shared validation, same file as the parent app)
 
-VERSION = "1.0.0"
+VERSION = "1.2.0"
 BASE = "/etc/squid/blighter"
 MODE_FILE = os.path.join(BASE, "mode")
 ALLOW_FILE = os.path.join(BASE, "allow.list")
@@ -178,8 +178,16 @@ def cmd_status():
             child[k.strip()] = v.strip().strip('"')
     code, fw = run(["nft", "list", "table", "inet", "blighter"])
     _, ver = run(["squid", "-v"])
+    user = child.get("CHILD_USER", "?")
+    _, groups = run(["id", "-nG", user])
+    is_admin = bool(set(groups.split()) & {"sudo", "admin", "wheel"}) if user != "?" else None
+    warnings = ([f"The child's account '{user}' is an ADMINISTRATOR (sudo) - they can undo all of this."]
+                if is_admin else [])
     out({
         "helper_version": VERSION,
+        "platform": "linux",
+        "child_is_admin": is_admin,
+        "warnings": warnings,
         "child_user": child.get("CHILD_USER", "?"),
         "voice_udp": child.get("ALLOW_VOICE_UDP", "yes"),
         "squid_version": ver.splitlines()[0] if ver else "?",

@@ -1,9 +1,16 @@
 # -----------------------------------------------------------------------------
 # Blighter Restrictor - Windows build on GitHub Actions.
-# Purpose: on every push (or on demand), build BlighterRestrictor.exe with
-# PyInstaller and the BlighterRestrictor-Setup-<ver>.exe installer with Inno
-# Setup on a Windows runner, check that the built exe starts (--self-test),
-# and keep the installer as a downloadable build artifact.
+# Purpose: on every push (or on demand):
+#   windows        - build BlighterRestrictor.exe with PyInstaller and the
+#                    BlighterRestrictor-Setup-<ver>.exe installer with Inno
+#                    Setup, check the exe starts (--self-test), keep the
+#                    installer as a downloadable artifact
+#   child-package  - build blighter-child-windows-<ver>.zip (on Linux)
+#   child-test     - install that package on a Windows runner and check it
+#                    for real: Squid, firewall (direct web access blocked,
+#                    access through Squid allowed, blocked site refused),
+#                    the parent app's SSH connection code against Windows'
+#                    OpenSSH, the self-repair task, then removal.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -49,3 +56,117 @@ jobs:
           name: BlighterRestrictor-Windows
           path: dist/BlighterRestrictor-Setup-*.exe
           if-no-files-found: error
+
+  child-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Windows child package
+        run: ./build-windows-child.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blighter-child-windows
+          path: dist/blighter-child-windows-*.zip
+          if-no-files-found: error
+
+  child-test:
+    needs: child-package
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: blighter-child-windows
+          path: pkg
+      - name: Prepare test machine
+        shell: pwsh
+        run: |
+          python -m pip install "paramiko>=3.4"
+          Expand-Archive (Get-ChildItem pkg\*.zip).FullName -DestinationPath pkg
+          $pw = ConvertTo-SecureString "Kid-$(Get-Random)-Aa1!" -AsPlainText -Force
+          New-LocalUser -Name testkid -Password $pw | Out-Null
+          # Keep the GitHub runner itself online once outgoing traffic is blocked.
+          # (Rules in the Blighter group survive; removal deletes them.)
+          $i = 0
+          foreach ($p in Get-Process -Name Runner.Listener, Runner.Worker -ErrorAction SilentlyContinue) {
+            $i++
+            New-NetFirewallRule -Name "BR-CI-Runner-$i" -DisplayName "CI runner $i" -Group "Blighter Restrictor" `
+              -Direction Outbound -Action Allow -Program $p.Path | Out-Null
+            Write-Host "Allowed runner program $($p.Path)"
+          }
+          "BLIGHTER_ADMIN_PASSWORD=Blighter-$(Get-Random)-Aa1!" | Out-File -Append $env:GITHUB_ENV
+      - name: Install the child component
+        shell: pwsh
+        run: |
+          $dir = (Get-ChildItem pkg -Directory | Select-Object -First 1).FullName
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dir\blighter-setup.ps1" -Child testkid -Yes
+          if ($LASTEXITCODE) { throw "setup failed ($LASTEXITCODE)" }
+      - name: Check filtering
+        shell: pwsh
+        run: |
+          $h = "C:\ProgramData\BlighterChild\blighter-apply.cmd"
+          $st = & $h status | ConvertFrom-Json
+          $st | Format-List | Out-String | Write-Host
+          Write-Host $st.firewall_rules
+          if ($st.platform -ne "windows") { throw "platform" }
+          if (-not $st.squid_running) { throw "Squid not running" }
+          if (-not $st.firewall_active) { throw "firewall not active" }
+          if (-not $st.proxy_locked) { throw "proxy policies missing" }
+          if ($st.child_is_admin -ne $false) { throw "child_is_admin should be false" }
+          $direct = $true
+          try { Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 15 | Out-Null } catch { $direct = $false }
+          if ($direct) { throw "Direct web access was NOT blocked" }
+          Write-Host "OK: direct web access blocked"
+          $r = Invoke-WebRequest https://example.com -Proxy http://127.0.0.1:3128 -TimeoutSec 30
+          Write-Host "OK: through Squid -> HTTP $($r.StatusCode)"
+          '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"]}' | & $h set
+          if ($LASTEXITCODE) { throw "set failed" }
+          $blocked = $true
+          try { Invoke-WebRequest https://www.example.com -Proxy http://127.0.0.1:3128 -TimeoutSec 30 | Out-Null; $blocked = $false } catch { }
+          if (-not $blocked) { throw "Blocked site was reachable" }
+          Write-Host "OK: blocked site refused by Squid"
+          $log = & $h log 20
+          $log | Write-Host
+          if (-not ($log -match "TCP_DENIED")) { throw "No TCP_DENIED entry in the Squid log" }
+      - name: Parent app SSH code against Windows OpenSSH
+        shell: pwsh
+        run: |
+          @"
+          import sys, tempfile
+          sys.path.insert(0, 'parent')
+          from blighter_parent.remote import Remote
+          class C: ip='127.0.0.1'; port=22; admin_user='blighter'; name='CI'; child_user='testkid'
+          r = Remote(C(), sys.argv[1], tempfile.mktemp())
+          st = r.status()
+          print('windows detected:', r.windows, '| squid running:', st['squid_running'], '| firewall:', st['firewall_active'])
+          assert r.windows and st['platform'] == 'windows' and st['firewall_active']
+          res = r.apply('block-all-allow-some', ['.example.com'], [])
+          print('apply:', res)
+          assert res['ok']
+          print(r.log(5))
+          r.close()
+          "@ | Set-Content ci_ssh.py
+          python ci_ssh.py $env:BLIGHTER_ADMIN_PASSWORD
+          if ($LASTEXITCODE) { throw "SSH test failed" }
+      - name: Self-repair task
+        shell: pwsh
+        run: |
+          Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Allow
+          Start-ScheduledTask -TaskPath "\Blighter Restrictor\" -TaskName "Enforce"
+          Start-Sleep -Seconds 45
+          Get-Content C:\ProgramData\BlighterChild\state\enforce.log -Tail 10
+          $p = Get-NetFirewallProfile -Profile Public
+          if ($p.DefaultOutboundAction -ne "Block") { throw "Enforce task did not repair the firewall" }
+          Write-Host "OK: firewall repaired by the scheduled task"
+      - name: Remove
+        if: always()
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\BlighterChild\blighter-setup.ps1 -Remove -Yes
+          Get-NetFirewallProfile | Format-Table Name, DefaultOutboundAction
+          Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
+          Write-Host "OK: direct web access works again after removal"

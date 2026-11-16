@@ -24,9 +24,12 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayo
 
 from .config_store import Child
 from .remote import Remote, forget_host_key
+from .shared import admin_warning_html, same_user
 from .workers import run_bg
 
-_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
+# Ubuntu usernames, plus Windows local account names (letters, digits,
+# spaces, dots, hyphens, underscores; up to 20 characters on Windows).
+_USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9 _.-]{0,31}$")
 
 
 class ChildDialog(QDialog):
@@ -59,8 +62,9 @@ class ChildDialog(QDialog):
         form.addRow("Admin password:", self.password)
         form.addRow("SSH port:", self.port)
 
-        hint = QLabel("The child's username must match the one given to "
-                      "<b>sudo blighter-setup</b> on the laptop.  Tip: reserve the "
+        hint = QLabel("The child's username must match the one given to the Blighter "
+                      "setup on the laptop (<b>sudo blighter-setup</b> on Ubuntu, "
+                      "<b>Install Blighter Child.cmd</b> on Windows).  Tip: reserve the "
                       "laptop's IP address in your router so it does not change.")
         hint.setWordWrap(True)
 
@@ -102,8 +106,8 @@ class ChildDialog(QDialog):
             raise ValueError(f"'{ip}' is not a valid IPv4 address.")
         for label, u in (("Child's username", cu), ("Admin login", au)):
             if not _USER_RE.match(u):
-                raise ValueError(f"{label} '{u}' is not a valid Ubuntu username.")
-        if cu == au:
+                raise ValueError(f"{label} '{u}' is not a valid username.")
+        if cu.lower() == au.lower():
             raise ValueError("The child's username and the admin login must be different.")
         c = Child(name=name, ip=ip, child_user=cu, admin_user=au, port=self.port.value())
         if self.original:
@@ -129,14 +133,16 @@ class ChildDialog(QDialog):
                 r.close()
 
         def ok(st):
-            msg = (f"<span style='color:#27ae60'><b>Connected.</b></span> "
+            system = "Windows" if st.get("platform") == "windows" else "Ubuntu"
+            msg = (f"<span style='color:#27ae60'><b>Connected</b></span> ({system}). "
                    f"Laptop filters user <b>{st.get('child_user')}</b>; "
                    f"{st.get('squid_version')}; Squid "
                    f"{'running' if st.get('squid_running') else '<b>NOT running</b>'}; firewall "
                    f"{'active' if st.get('firewall_active') else '<b>NOT active</b>'}.")
-            if st.get("child_user") != child.child_user:
+            if not same_user(st.get("child_user"), child.child_user, st.get("platform")):
                 msg += (f"<br><span style='color:#c0392b'>Warning: the laptop was set up for "
                         f"'{st.get('child_user')}', not '{child.child_user}'.</span>")
+            msg += admin_warning_html(st)
             self.result_label.setText(msg)
 
         run_bg(job, ok, lambda m: self.result_label.setText(f"<span style='color:#c0392b'>{m}</span>"))

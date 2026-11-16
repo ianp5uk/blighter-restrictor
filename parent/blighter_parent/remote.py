@@ -3,8 +3,14 @@
 #
 # Purpose: log in to the laptop's "blighter" admin account with its password
 # (Paramiko, pure Python, works the same on Linux and Windows) and run the
-# restricted helper "sudo -n /usr/sbin/blighter-apply ...".  Nothing else is
-# ever executed remotely.  Connections are reused while they stay open.
+# helper.  Nothing else is ever executed remotely.  Connections are reused
+# while they stay open.
+# The laptop's operating system is recognised from its SSH server's greeting
+# (Windows' OpenSSH announces itself as "OpenSSH_for_Windows"):
+#   Ubuntu  -> sudo -n /usr/sbin/blighter-apply <args>
+#   Windows -> C:\ProgramData\BlighterChild\blighter-apply.cmd <args>
+#              (an administrator's SSH session on Windows already has full
+#              rights, so there is no sudo)
 # Host keys are remembered on first connection (trust on first use) in the
 # app's own known_hosts file; if a laptop is reinstalled, use
 # "Forget host key" in the child's settings.
@@ -22,6 +28,7 @@
 
 import json
 import os
+import re
 import shlex
 import socket
 import threading
@@ -30,6 +37,8 @@ import time
 import paramiko
 
 HELPER = "/usr/sbin/blighter-apply"
+WIN_HELPER = r"C:\ProgramData\BlighterChild\blighter-apply.cmd"
+_SAFE_ARG = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
 class RemoteError(Exception):
@@ -64,6 +73,7 @@ class Remote:
         self._client = None
         self._lock = threading.Lock()
         self.last_used = time.monotonic()
+        self.windows = False
 
     @property
     def connected(self):
@@ -96,7 +106,7 @@ class Remote:
                 "another machine may be using that address.")
         except paramiko.BadAuthenticationType:
             raise RemoteError(f"{c.ip} does not accept password login for '{c.admin_user}'.  "
-                              "Run 'sudo blighter-setup <child>' on the laptop.")
+                              "Run the Blighter setup on the laptop again.")
         except paramiko.AuthenticationException:
             raise RemoteError(f"Login refused for '{c.admin_user}' on {c.ip} - check the password.")
         except (socket.timeout, TimeoutError, paramiko.ssh_exception.NoValidConnectionsError, OSError) as e:
@@ -104,16 +114,27 @@ class Remote:
                               "Is it switched on and on the home network?")
         except paramiko.SSHException as e:
             raise RemoteError(f"SSH error talking to {c.ip}: {e}")
+        self.windows = "windows" in (client.get_transport().remote_version or "").lower()
         self._client = client
         return client
+
+    def _command(self, args):
+        if self.windows:
+            # cmd.exe and PowerShell both run this unquoted form; arguments are
+            # restricted to simple words so nothing needs quoting.
+            for a in args:
+                if not _SAFE_ARG.match(a):
+                    raise RemoteError(f"Refusing unsafe helper argument {a!r}")
+            return WIN_HELPER + " " + " ".join(args)
+        return "sudo -n " + HELPER + " " + " ".join(shlex.quote(a) for a in args)
 
     def run_helper(self, args, stdin_text=None, timeout=90):
         """Run the helper; returns (exit_code, stdout, stderr)."""
         self.last_used = time.monotonic()
-        cmd = "sudo -n " + HELPER + " " + " ".join(shlex.quote(a) for a in args)
         with self._lock:
             for attempt in (1, 2):
                 client = self._connect()
+                cmd = self._command(args)
                 try:
                     stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
                     if stdin_text is not None:
@@ -129,6 +150,11 @@ class Remote:
                     self._client = None
                     if attempt == 2:
                         raise RemoteError(f"Connection to {self.child.ip} lost: {e}")
+        if self.windows:
+            if "is not recognized" in err or "cannot find the path" in err.lower():
+                raise RemoteError("The Blighter child component is not installed on that Windows laptop.  "
+                                  "Run 'Install Blighter Child.cmd' on it.")
+            return code, out, err
         if "a password is required" in err or "may not run sudo" in err or "not allowed to execute" in err:
             raise RemoteError("The admin account is not allowed to run the helper.  "
                               "Run 'sudo blighter-setup <child>' on the laptop.")
