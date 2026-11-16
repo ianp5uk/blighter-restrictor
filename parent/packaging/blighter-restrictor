@@ -1,0 +1,5 @@
+#!/bin/sh
+# Blighter Restrictor - launcher installed as /usr/bin/blighter-restrictor.
+# Purpose: start the parent GUI from the packaged Python files.
+export PYTHONPATH=/usr/lib/blighter-restrictor${PYTHONPATH:+:$PYTHONPATH}
+exec /usr/bin/python3 -m blighter_parent "$@"

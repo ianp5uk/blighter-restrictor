@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Blighter Restrictor
+Comment=Monitor and restrict children's web access
+Exec=blighter-restrictor
+Icon=blighter-restrictor
+Terminal=false
+Categories=Network;Security;Utility;

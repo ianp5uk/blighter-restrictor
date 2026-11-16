@@ -1,0 +1,58 @@
+#!/bin/bash
+# -----------------------------------------------------------------------------
+# Blighter Restrictor - child-account firewall (nftables).
+#
+# Purpose: make Squid the ONLY way the child's account can reach the web.
+# Rules apply only to processes owned by the child's user (from
+# /etc/blighter/child.conf).  For that user, outgoing traffic is allowed to:
+#   - this laptop (loopback) - which is where Squid listens
+#   - DNS (port 53) and ping
+#   - UDP 50000-65535 when ALLOW_VOICE_UDP=yes (Discord voice/video)
+# Everything else (direct web access, QUIC, game servers, VPNs...) is
+# rejected.  Squid itself runs as the "proxy" user, so it is unaffected.
+# Uses its own table "inet blighter" so it never touches other firewall rules.
+#
+# Usage: blighter-firewall start|stop|status
+# -----------------------------------------------------------------------------
+set -euo pipefail
+CONF=/etc/blighter/child.conf
+
+start() {
+    [ -r "$CONF" ] || { echo "Missing $CONF - run blighter-setup first" >&2; exit 1; }
+    # shellcheck disable=SC1090
+    . "$CONF"
+    CHILD_UID=$(id -u "$CHILD_USER")
+    VOICE=""
+    if [ "${ALLOW_VOICE_UDP:-yes}" = "yes" ]; then
+        VOICE="udp dport 50000-65535 accept comment \"Discord voice/video\""
+    fi
+    nft -f - <<NFT
+table inet blighter
+delete table inet blighter
+table inet blighter {
+    chain output {
+        type filter hook output priority filter; policy accept;
+        meta skuid != $CHILD_UID accept
+        oifname "lo" accept comment "Squid on this laptop"
+        meta l4proto { icmp, ipv6-icmp } accept
+        udp dport 53 accept
+        tcp dport 53 accept
+        $VOICE
+        counter reject with icmpx admin-prohibited comment "Child direct access blocked"
+    }
+}
+NFT
+    echo "Blighter firewall active for user $CHILD_USER (uid $CHILD_UID)"
+}
+
+stop() {
+    nft delete table inet blighter 2>/dev/null || true
+    echo "Blighter firewall removed"
+}
+
+case "${1:-}" in
+    start|restart) start ;;
+    stop) stop ;;
+    status) nft list table inet blighter ;;
+    *) echo "usage: $0 start|stop|status" >&2; exit 2 ;;
+esac

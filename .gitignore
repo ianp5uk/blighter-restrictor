@@ -1,0 +1,7 @@
+# Build outputs and local environments (not stored in Git).
+build/
+dist/
+.venv-win/
+__pycache__/
+*.spec
+parent/blighter_parent/domains.py

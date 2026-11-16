@@ -1,0 +1,17 @@
+# Blighter Restrictor - loads the child-account firewall at boot.
+# Purpose: keep the child's web traffic forced through Squid after every boot.
+[Unit]
+Description=Blighter Restrictor child firewall
+After=nftables.service
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/blighter-firewall start
+ExecReload=/usr/sbin/blighter-firewall start
+ExecStop=/usr/sbin/blighter-firewall stop
+
+[Install]
+WantedBy=multi-user.target

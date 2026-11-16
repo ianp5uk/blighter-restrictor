@@ -1,0 +1,8 @@
+#!/bin/sh
+# Blighter Restrictor child package - pre-removal.
+# Purpose: on uninstall (not upgrade) undo the firewall, proxy lock and sudo rule.
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    /usr/sbin/blighter-setup --remove --yes || true
+fi
+exit 0

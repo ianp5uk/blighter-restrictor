@@ -1,0 +1,229 @@
+#!/bin/bash
+# -----------------------------------------------------------------------------
+# Blighter Restrictor - one-time setup of a child's laptop.
+#
+# Purpose: prepare this laptop so the parent app can manage it over the home
+# network.  Safe to run again (e.g. after installing Discord).  It:
+#   1. records which user account is the child's (/etc/blighter/child.conf)
+#   2. creates the "blighter" admin account (password login over SSH) that
+#      may run ONLY /usr/sbin/blighter-apply as root
+#   3. makes sure SSH password login works for that account and SSH is on
+#   4. replaces squid.conf with the Blighter one (old file backed up)
+#   5. starts the child-only firewall forcing web traffic through Squid
+#   6. sets and locks the desktop proxy to 127.0.0.1:3128
+#   7. adds a proxy-aware Discord launcher if Discord (.deb or snap) is installed
+#
+# Usage:  sudo blighter-setup <child-username> [--no-voice]
+#         sudo blighter-setup --remove [--yes]      undo everything
+# -----------------------------------------------------------------------------
+set -euo pipefail
+
+ADMIN=blighter
+CONF_DIR=/etc/blighter
+CONF=$CONF_DIR/child.conf
+SQUID_CONF=/etc/squid/squid.conf
+TEMPLATE=/usr/share/blighter-child/squid.conf
+SUDOERS=/etc/sudoers.d/blighter
+SSHD_DROPIN=/etc/ssh/sshd_config.d/10-blighter.conf
+DCONF_PROFILE=/etc/dconf/profile/user
+DCONF_KEYS=/etc/dconf/db/local.d/00-blighter-proxy
+DCONF_LOCKS=/etc/dconf/db/local.d/locks/00-blighter-proxy
+PROFILE_SH=/etc/profile.d/blighter-proxy.sh
+APPS=/usr/local/share/applications
+
+say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+warn() { printf '\033[33mWARNING: %s\033[0m\n' "$*"; }
+die()  { printf '\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+have_systemd() { [ -d /run/systemd/system ]; }
+svc() { # svc <action> <unit>
+    if have_systemd; then systemctl "$1" "$2" 2>/dev/null || true; fi
+}
+
+[ "$(id -u)" -eq 0 ] || die "Run with sudo:  sudo blighter-setup <child-username>"
+
+# ----------------------------------------------------------------- removal ---
+remove_all() {
+    local yes=$1
+    say "Removing Blighter Restrictor configuration"
+    svc disable blighter-firewall.service
+    svc stop blighter-firewall.service
+    /usr/sbin/blighter-firewall stop 2>/dev/null || nft delete table inet blighter 2>/dev/null || true
+    rm -f "$DCONF_KEYS" "$DCONF_LOCKS" "$PROFILE_SH" "$SUDOERS" "$SSHD_DROPIN"
+    rm -f "$APPS/discord.desktop" "$APPS/discord_discord.desktop"
+    command -v dconf >/dev/null && dconf update || true
+    local backup
+    backup=$(ls -1t /etc/squid/squid.conf.pre-blighter-* 2>/dev/null | head -1 || true)
+    if [ -n "$backup" ]; then
+        cp -a "$backup" "$SQUID_CONF"
+        echo "Restored $backup -> $SQUID_CONF"
+        svc restart squid
+    fi
+    svc try-reload-or-restart ssh
+    if id "$ADMIN" >/dev/null 2>&1; then
+        if [ "$yes" = "yes" ]; then
+            echo "Admin account '$ADMIN' kept (delete with: sudo userdel -r $ADMIN)"
+        else
+            read -r -p "Delete the '$ADMIN' admin account too? [y/N] " a
+            if [[ "$a" =~ ^[Yy] ]]; then userdel -r "$ADMIN" 2>/dev/null || true; fi
+        fi
+    fi
+    rm -rf "$CONF_DIR"
+    echo "Done. Squid rule files in /etc/squid/blighter were left in place."
+}
+
+if [ "${1:-}" = "--remove" ]; then
+    remove_all "$([ "${2:-}" = "--yes" ] && echo yes || echo no)"
+    exit 0
+fi
+
+CHILD=${1:-}
+VOICE=yes
+[ "${2:-}" = "--no-voice" ] && VOICE=no
+[ -n "$CHILD" ] || die "Usage: sudo blighter-setup <child-username> [--no-voice]"
+id "$CHILD" >/dev/null 2>&1 || die "User '$CHILD' does not exist on this laptop"
+[ "$CHILD" != "$ADMIN" ] && [ "$CHILD" != root ] || die "'$CHILD' cannot be the child account"
+if id -nG "$CHILD" | tr ' ' '\n' | grep -qxE 'sudo|admin|wheel'; then
+    warn "'$CHILD' is an administrator (sudo group) and could undo all of this."
+    warn "Remove with:  sudo deluser $CHILD sudo"
+fi
+
+# ------------------------------------------------------------- 1. config ---
+say "1/7 Recording child account: $CHILD"
+mkdir -p "$CONF_DIR"
+cat > "$CONF" <<EOF
+# Blighter Restrictor - which account on this laptop is filtered.
+CHILD_USER="$CHILD"
+# yes = allow outgoing UDP 50000-65535 (Discord voice/video calls)
+ALLOW_VOICE_UDP="$VOICE"
+EOF
+chmod 644 "$CONF"
+
+# -------------------------------------------------------- 2. admin account ---
+say "2/7 Admin account '$ADMIN'"
+if id "$ADMIN" >/dev/null 2>&1; then
+    echo "Account '$ADMIN' already exists."
+    read -r -p "Change its password? [y/N] " a
+    [[ "$a" =~ ^[Yy] ]] && passwd "$ADMIN"
+else
+    useradd --create-home --shell /bin/bash --comment "Blighter Restrictor admin" "$ADMIN"
+    echo "Choose a password for '$ADMIN' (you will enter this in the parent app):"
+    until passwd "$ADMIN"; do echo "Try again."; done
+fi
+# Hide it from the login screen.
+mkdir -p /var/lib/AccountsService/users
+printf '[User]\nSystemAccount=true\n' > "/var/lib/AccountsService/users/$ADMIN"
+# The admin may run only the helper as root.
+echo "$ADMIN ALL=(root) NOPASSWD: /usr/sbin/blighter-apply" > "$SUDOERS.tmp"
+chmod 440 "$SUDOERS.tmp"
+visudo -cf "$SUDOERS.tmp" >/dev/null || die "sudoers check failed"
+mv "$SUDOERS.tmp" "$SUDOERS"
+
+# ------------------------------------------------------------------ 3. SSH ---
+say "3/7 SSH access"
+rm -f "$SSHD_DROPIN"
+mkdir -p /run/sshd
+pw_setting=$(sshd -T -C "user=$ADMIN,host=parent,addr=192.168.0.2" 2>/dev/null \
+        | grep -i '^passwordauthentication' || echo "unknown")
+if ! echo "$pw_setting" | grep -qi ' yes$'; then
+    printf '# Blighter Restrictor: allow password login for the admin account only.\nMatch User %s\n    PasswordAuthentication yes\n    KbdInteractiveAuthentication yes\n' \
+        "$ADMIN" > "$SSHD_DROPIN"
+    sshd -t || { rm -f "$SSHD_DROPIN"; die "sshd rejected the drop-in"; }
+    echo "Password login enabled for '$ADMIN' only."
+else
+    echo "Password login already allowed."
+fi
+svc enable ssh.socket
+svc enable ssh.service
+svc try-reload-or-restart ssh
+svc start ssh.socket
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow 22/tcp >/dev/null && echo "Opened port 22 in ufw."
+fi
+
+# ---------------------------------------------------------------- 4. Squid ---
+say "4/7 Squid configuration"
+if [ -f "$SQUID_CONF" ] && ! head -5 "$SQUID_CONF" | grep -q "Blighter Restrictor"; then
+    bak="$SQUID_CONF.pre-blighter-$(date +%Y%m%d-%H%M%S)"
+    cp -a "$SQUID_CONF" "$bak"
+    echo "Existing squid.conf saved as $bak"
+fi
+install -m 644 "$TEMPLATE" "$SQUID_CONF"
+/usr/sbin/blighter-apply init
+squid -k parse -f "$SQUID_CONF" >/tmp/blighter-parse.log 2>&1 \
+    || { cat /tmp/blighter-parse.log; die "Squid rejected the configuration"; }
+svc enable squid
+svc restart squid
+
+# ------------------------------------------------------------- 5. firewall ---
+say "5/7 Firewall for '$CHILD'"
+if have_systemd; then
+    systemctl daemon-reload
+    systemctl enable blighter-firewall.service
+    systemctl restart blighter-firewall.service
+else
+    /usr/sbin/blighter-firewall start
+fi
+
+# ---------------------------------------------------------- 6. proxy setup ---
+say "6/7 Desktop proxy (locked) -> 127.0.0.1:3128"
+mkdir -p /etc/dconf/profile /etc/dconf/db/local.d/locks
+if [ ! -f "$DCONF_PROFILE" ]; then
+    printf 'user-db:user\nsystem-db:local\n' > "$DCONF_PROFILE"
+elif ! grep -qx 'system-db:local' "$DCONF_PROFILE"; then
+    echo 'system-db:local' >> "$DCONF_PROFILE"
+fi
+cat > "$DCONF_KEYS" <<'EOF'
+# Blighter Restrictor: send all web traffic to the local Squid proxy.
+[system/proxy]
+mode='manual'
+ignore-hosts=['localhost', '127.0.0.0/8', '::1']
+
+[system/proxy/http]
+host='127.0.0.1'
+port=3128
+
+[system/proxy/https]
+host='127.0.0.1'
+port=3128
+EOF
+cat > "$DCONF_LOCKS" <<'EOF'
+/system/proxy/mode
+/system/proxy/ignore-hosts
+/system/proxy/http/host
+/system/proxy/http/port
+/system/proxy/https/host
+/system/proxy/https/port
+EOF
+dconf update
+cat > "$PROFILE_SH" <<EOF
+# Blighter Restrictor: proxy for command-line programs (child account only).
+if [ "\$(id -un)" = "$CHILD" ]; then
+    export http_proxy=http://127.0.0.1:3128 https_proxy=http://127.0.0.1:3128
+    export HTTP_PROXY=\$http_proxy HTTPS_PROXY=\$https_proxy
+    export no_proxy=localhost,127.0.0.1,::1 NO_PROXY=localhost,127.0.0.1,::1
+fi
+EOF
+chmod 644 "$PROFILE_SH"
+
+# -------------------------------------------------------------- 7. Discord ---
+say "7/7 Discord launcher"
+mkdir -p "$APPS"
+found=no
+for src in /usr/share/applications/discord.desktop \
+           /var/lib/snapd/desktop/applications/discord_discord.desktop; do
+    if [ -f "$src" ]; then
+        dst="$APPS/$(basename "$src")"
+        sed -E '/^Exec=/{ / %[uUfF]$/ s# (%[uUfF])$# --proxy-server=http://127.0.0.1:3128 \1#; t; s#$# --proxy-server=http://127.0.0.1:3128#; }' "$src" > "$dst"
+        echo "Proxy-aware launcher written: $dst"
+        found=yes
+    fi
+done
+[ "$found" = yes ] || echo "Discord not installed (re-run this setup after installing it)."
+
+# ---------------------------------------------------------------- summary ---
+say "Setup complete"
+echo "Child account : $CHILD"
+echo "Admin account : $ADMIN  (use this login and its password in the parent app)"
+echo "IPv4 address  : $(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -3 | tr '\n' ' ')"
+echo "Tip: reserve this address for the laptop in your router's DHCP settings."
+echo "The child must log out and back in for the proxy setting to take effect."

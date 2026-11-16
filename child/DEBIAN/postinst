@@ -1,0 +1,17 @@
+#!/bin/sh
+# Blighter Restrictor child package - post-install message.
+# Purpose: reload systemd units and tell the parent how to finish setup.
+set -e
+if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+if [ "$1" = "configure" ]; then
+    if [ -f /etc/blighter/child.conf ]; then
+        # Upgrade: re-apply firewall with the new script.
+        if [ -d /run/systemd/system ]; then systemctl try-restart blighter-firewall.service || true; fi
+    else
+        echo ""
+        echo "Blighter Restrictor installed.  Finish setup with:"
+        echo "    sudo blighter-setup <child-username>"
+        echo ""
+    fi
+fi
+exit 0
