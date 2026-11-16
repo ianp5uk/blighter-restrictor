@@ -27,7 +27,15 @@ if ($LASTEXITCODE) { throw "pip failed" }
 # Same shared rules file the Linux packages use.
 Copy-Item common\domains.py parent\blighter_parent\domains.py -Force
 
+# cryptography/bcrypt/pynacl (used by SSH) need python3.dll, which PyInstaller
+# does not always collect from a virtual environment - add it explicitly.
+$base = & $py -c "import sys; print(sys.base_prefix)"
+$py3dll = Join-Path $base "python3.dll"
+if (-not (Test-Path $py3dll)) { throw "python3.dll not found in $base" }
+
 & $py -m PyInstaller --noconfirm --clean --windowed `
+    --add-binary "$py3dll;." `
+    --collect-binaries cryptography `
     --name BlighterRestrictor `
     --icon windows\blighter.ico `
     --paths parent `
