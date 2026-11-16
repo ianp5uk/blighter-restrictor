@@ -104,7 +104,9 @@ jobs:
         run: |
           $dir = (Get-ChildItem pkg -Directory | Select-Object -First 1).FullName
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dir\blighter-setup.ps1" -Child testkid -Yes
-          if ($LASTEXITCODE) { throw "setup failed ($LASTEXITCODE)" }
+          $code = $LASTEXITCODE
+          icacls C:\Squid; icacls C:\ProgramData\BlighterChild; icacls C:\ProgramData\BlighterChild\python\python.exe
+          if ($code) { throw "setup failed ($code)" }
       - name: Check filtering
         shell: pwsh
         run: |

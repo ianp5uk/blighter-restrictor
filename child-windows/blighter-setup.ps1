@@ -71,11 +71,23 @@ function Get-SquidRoot {
 }
 
 function Lock-Folder([string]$path) {
-    $ErrorActionPreference = "Continue"
     # Only SYSTEM and Administrators may change it; ordinary users may read and run.
     # (Folders made at the root of C: are otherwise changeable by every signed-in user.)
-    & icacls.exe "$path" /inheritance:r /grant:r "*${SidSystem}:(OI)(CI)F" "*${SidAdmins}:(OI)(CI)F" "*${SidUsers}:(OI)(CI)RX" /T /C /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { Warn "Could not fully lock the permissions of $path" }
+    # The folder gets a fresh, protected ACL; everything inside is reset to inherit it.
+    $inherit = [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+    $none = [Security.AccessControl.PropagationFlags]::None
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier $SidAdmins))
+    foreach ($e in @(@($SidSystem, "FullControl"), @($SidAdmins, "FullControl"), @($SidUsers, "ReadAndExecute"))) {
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            (New-Object Security.Principal.SecurityIdentifier $e[0]), [Security.AccessControl.FileSystemRights]$e[1], $inherit, $none, "Allow")
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $path -AclObject $acl
+    $ErrorActionPreference = "Continue"
+    & icacls.exe "$path\*" /reset /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { Warn "Some files in $path could not be reset to the locked permissions (they may be in use)." }
 }
 
 function Get-AdminSids {
