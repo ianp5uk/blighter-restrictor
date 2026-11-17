@@ -14,6 +14,8 @@
 # Host keys are remembered on first connection (trust on first use) in the
 # app's own known_hosts file; if a laptop is reinstalled, use
 # "Forget host key" in the child's settings.
+# A command that times out is NOT retried (that only doubled the wait);
+# a dropped connection (laptop slept) is reconnected once.
 # Logging out closes the SSH session on the laptop; this happens on request
 # (Log out button / menu), after 5 minutes without use, and when the app closes.
 #
@@ -145,6 +147,16 @@ class Remote:
                     code = stdout.channel.recv_exit_status()
                     self.last_used = time.monotonic()
                     break
+                except (socket.timeout, TimeoutError):
+                    # The laptop is connected but slow to answer.  Retrying would
+                    # only double the wait, so report it straight away.
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    self._client = None
+                    raise RemoteError(f"{self.child.name}'s laptop did not answer within {timeout} seconds.  "
+                                      "It may be busy (for example installing updates) - try again shortly.")
                 except (paramiko.SSHException, EOFError, OSError) as e:
                     # Connection went stale (laptop slept) - reconnect once.
                     self._client = None

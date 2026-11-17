@@ -49,12 +49,16 @@
 param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "status")][string]$Action)
 
 $ErrorActionPreference = "Stop"
+# No progress bars: each firewall cmdlet would otherwise flash one, which is
+# slow and looks like a fault.
+$ProgressPreference    = "SilentlyContinue"
 $Here       = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ChildConf  = Join-Path $Here "child.conf"
 $StateDir   = Join-Path $Here "state"
 $DisabledDb = Join-Path $StateDir "disabled-rules.txt"
 $PreFile    = Join-Path $StateDir "pre-install.json"
 $PausedFlag = Join-Path $StateDir "paused"
+$Incomplete = Join-Path $StateDir "setup-incomplete.txt"
 $SshRuleWin = "OpenSSH-Server-In-TCP"
 $Group      = "Blighter Restrictor"
 $Proxy      = "127.0.0.1:3128"
@@ -140,24 +144,39 @@ function Get-SshRule {
               RemoteAddress = "LocalSubnet"; Profile = "Private" }
 }
 
-function Get-OtherOutboundAllowRules {
-    # Enabled "allow outgoing" rules that are not ours and not Core Networking.
-    Get-NetFirewallRule -Direction Outbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
-        Where-Object { $_.Group -ne $Group -and $_.Group -ne $CoreGroup -and $_.DisplayGroup -ne "Core Networking" -and $_.Name -ne $SshRuleWin }
+# Speed: Windows has hundreds of firewall rules (322 on a typical Windows 11
+# laptop).  Asking for them one at a time takes about a second each, so every
+# function below reads ALL rules once (Get-AllRules) and works on that list.
+function Get-AllRules {
+    # Every rule in the local (persistent) store, as one list.
+    return @(Get-NetFirewallRule -ErrorAction SilentlyContinue)
 }
 
-function Disable-OtherOutboundRules {
+function Get-OtherOutboundAllowRules($all = $null) {
+    # Enabled "allow outgoing" rules that are not ours and not Core Networking.
+    if ($null -eq $all) { $all = Get-AllRules }
+    return @($all | Where-Object {
+        "$($_.Direction)" -eq "Outbound" -and "$($_.Action)" -eq "Allow" -and "$($_.Enabled)" -eq "True" -and
+        $_.Group -ne $Group -and $_.Group -ne $CoreGroup -and $_.DisplayGroup -ne "Core Networking" -and $_.Name -ne $SshRuleWin })
+}
+
+function Disable-OtherOutboundRules($all = $null) {
+    $others = Get-OtherOutboundAllowRules $all
+    if (-not $others.Count) { return }
+    if ($Action -ne "enforce") { Write-Host "Switching off $($others.Count) other outgoing allow rule(s) in one batch..." }
+    # Record the names FIRST, so an interruption can never lose track of a rule.
+    # (A rule that then fails to switch off is still on; switching it "back on"
+    # later changes nothing.)
     $known = @()
     if (Test-Path $DisabledDb) { $known = @(Get-Content $DisabledDb) }
-    $count = 0; $failed = 0
-    foreach ($rule in @(Get-OtherOutboundAllowRules)) {
-        try {
-            # Only rules in the local store can be changed; others (e.g. Group Policy) are reported.
-            Set-NetFirewallRule -Name $rule.Name -Enabled False -PolicyStore PersistentStore -ErrorAction Stop
-            if ($known -notcontains $rule.Name) { Add-Content -Path $DisabledDb -Value $rule.Name; $known += $rule.Name }
-            $count++
-        } catch { $failed++ }
-    }
+    $new = @($others | ForEach-Object { $_.Name } | Where-Object { $known -notcontains $_ })
+    if ($new.Count) { Add-Content -Path $DisabledDb -Value $new }
+    $errs = $null
+    # One call for all of them.  Only rules in the local store can be changed;
+    # others (e.g. Group Policy) are reported.
+    $others | Disable-NetFirewallRule -ErrorAction SilentlyContinue -ErrorVariable errs
+    $failed = @($errs).Count
+    $count = $others.Count - $failed
     if ($count) { Write-BLog "Switched off $count other outgoing allow rule(s)." }
     if ($failed) { Write-BLog "WARNING: $failed outgoing allow rule(s) could not be switched off." }
 }
@@ -171,12 +190,15 @@ function Enable-Firewall([bool]$voice, [bool]$force = $true) {
     # Windows' own OpenSSH rule allows port 22 from anywhere on every profile - ours replaces it.
     # (Not recorded with the others: removal restores it from the "before" state.)
     Get-NetFirewallRule -Name $SshRuleWin -ErrorAction SilentlyContinue |
-        Where-Object { $_.Enabled -eq "True" } | ForEach-Object { Set-NetFirewallRule -Name $_.Name -Enabled False }
-    Disable-OtherOutboundRules
+        Where-Object { $_.Enabled -eq "True" } | Disable-NetFirewallRule
+    Disable-OtherOutboundRules (Get-AllRules)
     Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True -DefaultOutboundAction Block
 }
 
-function Test-FirewallOk([bool]$voice) {
+function Test-FirewallOk([bool]$voice, $all = $null) {
+    if ($null -eq $all) { $all = Get-AllRules }
+    $byName = @{}
+    foreach ($r in $all) { $byName[$r.Name] = $r }
     $problems = @()
     foreach ($p in Get-NetFirewallProfile -PolicyStore ActiveStore) {
         if ($p.Enabled -ne "True") { $problems += "Firewall is OFF for the $($p.Name) profile" }
@@ -184,11 +206,11 @@ function Test-FirewallOk([bool]$voice) {
     }
     $names = @((Get-WantedRules $voice).Name) + "BR-SSH-In"
     foreach ($n in $names) {
-        $r = Get-NetFirewallRule -Name $n -ErrorAction SilentlyContinue
+        $r = $byName[$n]
         if (-not $r) { $problems += "Rule $n is missing" }
-        elseif ($r.Enabled -ne "True") { $problems += "Rule $n is switched off" }
+        elseif ("$($r.Enabled)" -ne "True") { $problems += "Rule $n is switched off" }
     }
-    $others = @(Get-OtherOutboundAllowRules)
+    $others = Get-OtherOutboundAllowRules $all
     if ($others.Count) { $problems += "$($others.Count) other outgoing allow rule(s) are on: " + (($others | Select-Object -First 5 | ForEach-Object { $_.DisplayName }) -join "; ") }
     return ,$problems
 }
@@ -209,9 +231,9 @@ function Restore-FirewallDefaults($pre) {
 function Enable-RecordedRules {
     # Switch back on the "allow outgoing" rules this script switched off.
     if (Test-Path $DisabledDb) {
-        foreach ($n in Get-Content $DisabledDb | Sort-Object -Unique) {
-            Set-NetFirewallRule -Name $n -Enabled True -ErrorAction SilentlyContinue
-        }
+        $names = @(Get-Content $DisabledDb | Where-Object { $_ } | Sort-Object -Unique)
+        # One call for all of them (rules deleted since are skipped silently).
+        if ($names.Count) { Enable-NetFirewallRule -Name $names -ErrorAction SilentlyContinue }
         Remove-Item $DisabledDb -Force
     }
 }
@@ -557,9 +579,14 @@ switch ($Action) {
     "status" {
         $ErrorActionPreference = "Continue"
         $paused = Test-Path $PausedFlag
-        $problems = Test-FirewallOk $voice
+        $all = Get-AllRules
+        $problems = Test-FirewallOk $voice $all
         if ($paused) { $problems = @("Filtering is PAUSED since " + (Get-Content $PausedFlag -TotalCount 1)) + $problems }
         $warnings = @()
+        if (Test-Path $Incomplete) {
+            $warnings += ("Setup on this laptop did not finish (started " + (Get-Content $Incomplete -TotalCount 1) +
+                          ").  Run 'Install Blighter Child.cmd' again to finish it, or 'Remove Blighter Child.cmd' to undo it.")
+        }
         $adminSids = @(Get-AdminSids)
         $childAdmin = $null
         if ($conf.CHILD_SID) { $childAdmin = $adminSids -contains $conf.CHILD_SID }
@@ -572,10 +599,20 @@ switch ($Action) {
         }
         $lines += ""
         $lines += "Blighter rules:"
-        foreach ($r in Get-NetFirewallRule -Group $Group -ErrorAction SilentlyContinue | Sort-Object Name) {
-            $port = ($r | Get-NetFirewallPortFilter)
-            $app = ($r | Get-NetFirewallApplicationFilter)
-            $svc = ($r | Get-NetFirewallServiceFilter).Service
+        # Asking for each rule's port/program/service details separately took over
+        # a minute; instead read every filter of each kind once and match them up
+        # by InstanceID (a filter has the same InstanceID as its rule).
+        $ours = @($all | Where-Object { $_.Group -eq $Group } | Sort-Object Name)
+        $ports = @{}; $apps = @{}; $svcs = @{}
+        if ($ours.Count) {
+            foreach ($f in Get-NetFirewallPortFilter -All -ErrorAction SilentlyContinue) { $ports[$f.InstanceID] = $f }
+            foreach ($f in Get-NetFirewallApplicationFilter -All -ErrorAction SilentlyContinue) { $apps[$f.InstanceID] = $f }
+            foreach ($f in Get-NetFirewallServiceFilter -All -ErrorAction SilentlyContinue) { $svcs[$f.InstanceID] = $f }
+        }
+        foreach ($r in $ours) {
+            $port = $ports[$r.InstanceID]
+            $app = $apps[$r.InstanceID]
+            $svc = if ($svcs[$r.InstanceID]) { $svcs[$r.InstanceID].Service } else { $null }
             $what = @()
             if ($app.Program -and $app.Program -ne "Any") { $what += $app.Program }
             if ($svc -and $svc -ne "Any") { $what += "service $svc" }

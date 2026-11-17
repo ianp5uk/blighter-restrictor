@@ -6,8 +6,10 @@
 #                    Setup, check the exe starts (--self-test), keep the
 #                    installer as a downloadable artifact
 #   child-package  - build blighter-child-windows-<ver>.zip (on Linux)
-#   child-test     - install that package on a Windows runner and check it
-#                    for real: Squid, firewall (direct web access blocked,
+#   child-test     - first check that a setup stopped part-way (-TestFailAt 7)
+#                    undoes itself, then install that package on a Windows
+#                    runner and check it for real (including how long
+#                    "status" takes and the neutral block page): Squid, firewall (direct web access blocked,
 #                    access through Squid allowed, blocked site refused),
 #                    the parent app's SSH connection code against Windows'
 #                    OpenSSH, the self-repair task, pause / resume, then
@@ -74,7 +76,7 @@ jobs:
   child-test:
     needs: child-package
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -115,20 +117,65 @@ jobs:
             squid = (Test-Path C:\Squid)
           }
           $before | ConvertTo-Json | Tee-Object "$env:RUNNER_TEMP\before.json"
+          # The "after removal matches before setup" check, used twice.
+          @'
+          $before = Get-Content "$env:RUNNER_TEMP\before.json" -Raw | ConvertFrom-Json
+          $bad = @()
+          $profiles = @(Get-NetFirewallProfile -PolicyStore PersistentStore | ForEach-Object { "$($_.Name)=$($_.Enabled)/$($_.DefaultOutboundAction)" })
+          if (($profiles -join ",") -ne ($before.profiles -join ",")) { $bad += "firewall profiles: $($profiles -join ',') vs $($before.profiles -join ',')" }
+          $on = @(Get-NetFirewallRule -Direction Outbound -Action Allow -Enabled True | Where-Object { $_.Group -ne "Blighter Restrictor" }).Count
+          if ($on -ne $before.outbound_allow_on) { $bad += "outgoing allow rules on: $on vs $($before.outbound_allow_on)" }
+          if (Get-NetFirewallRule -Group "Blighter Restrictor" -ErrorAction SilentlyContinue) { $bad += "Blighter firewall rules left" }
+          if (Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -ErrorAction SilentlyContinue) { $bad += "scheduled tasks left" }
+          if (Get-LocalUser blighter -ErrorAction SilentlyContinue) { $bad += "blighter account left" }
+          $sshd = Get-Service sshd -ErrorAction SilentlyContinue
+          if (-not $before.sshd -and $sshd -and ($sshd.Status -eq "Running" -or "$($sshd.StartType)" -ne "Disabled")) { $bad += "sshd still running/enabled: $($sshd.Status) $($sshd.StartType)" }
+          if (-not $before.sshd -and (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue | Where-Object Enabled -eq "True")) { $bad += "OpenSSH firewall rule left on" }
+          if (-not $before.squid -and (Test-Path C:\Squid\bin\squid.exe)) { $bad += "Squid still installed" }
+          $v = (Get-ItemProperty HKLM:\SOFTWARE\Policies\Google\Chrome -ErrorAction SilentlyContinue).ProxySettings
+          if ($v -ne "PRE-EXISTING") { $bad += "Chrome policy not restored ($v)" }
+          if (Get-ItemProperty HKLM:\SOFTWARE\Policies\Microsoft\Edge -Name ProxySettings -ErrorAction SilentlyContinue) { $bad += "Edge policy left" }
+          if (Test-Path HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Proxy) { $bad += "Firefox policy left" }
+          if (Test-Path C:\ProgramData\BlighterChild) { $bad += "C:\ProgramData\BlighterChild left" }
+          Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
+          Write-Host "OK: direct web access works again after removal"
+          if ($bad) { $bad | ForEach-Object { Write-Host "NOT RESTORED: $_" }; throw "$($bad.Count) difference(s) after removal" }
+          Write-Host "OK: laptop settings match the state recorded before setup"
+          '@ | Set-Content "$env:RUNNER_TEMP\compare.ps1"
           "BLIGHTER_ADMIN_PASSWORD=Parent-$(Get-Random)-Aa1!" | Out-File -Append $env:GITHUB_ENV
+      - name: Interrupted setup is undone
+        shell: pwsh
+        run: |
+          # Stop setup with an error at step 7 (after Squid, the account and
+          # OpenSSH): it must undo everything by itself.
+          $dir = (Get-ChildItem pkg -Directory | Select-Object -First 1).FullName
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dir\blighter-setup.ps1" -Child testkid -Yes -TestFailAt 7
+          if ($LASTEXITCODE -eq 0) { throw "setup should have failed at step 7" }
+          Start-Sleep -Seconds 15
+          & "$env:RUNNER_TEMP\compare.ps1"
+          Write-Host "OK: interrupted setup undone"
+          & "$env:RUNNER_TEMP\runner-rules.ps1"
       - name: Install the child component
         shell: pwsh
         run: |
           $dir = (Get-ChildItem pkg -Directory | Select-Object -First 1).FullName
+          $sw = [Diagnostics.Stopwatch]::StartNew()
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dir\blighter-setup.ps1" -Child testkid -Yes
           $code = $LASTEXITCODE
+          Write-Host ("Setup took {0:n0} seconds" -f $sw.Elapsed.TotalSeconds)
+          if (Test-Path C:\ProgramData\BlighterChild\state\setup-incomplete.txt) { throw "setup-incomplete marker left after a finished setup" }
           icacls C:\Squid; icacls C:\ProgramData\BlighterChild; icacls C:\ProgramData\BlighterChild\python\python.exe
           if ($code) { throw "setup failed ($code)" }
       - name: Check filtering
         shell: pwsh
         run: |
           $h = "C:\ProgramData\BlighterChild\blighter-apply.cmd"
+          $n = @(Get-NetFirewallRule).Count
+          $sw = [Diagnostics.Stopwatch]::StartNew()
           $st = & $h status | ConvertFrom-Json
+          $secs = $sw.Elapsed.TotalSeconds
+          Write-Host ("status took {0:n1} seconds ({1} firewall rules on this machine)" -f $secs, $n)
+          if ($secs -gt 30) { throw "status is too slow ($secs s)" }
           $st | Format-List | Out-String | Write-Host
           Write-Host $st.firewall_rules
           if ($st.platform -ne "windows") { throw "platform" }
@@ -151,6 +198,14 @@ jobs:
           $log = & $h log 20
           $log | Write-Host
           if (-not ($log -match "TCP_DENIED")) { throw "No TCP_DENIED entry in the Squid log" }
+          # The block page must not mention Squid (plain http shows Squid's page).
+          $page = (& curl.exe -s -i -x http://127.0.0.1:3128 http://www.example.com/) -join "`n"
+          Write-Host $page
+          if ($page -notmatch "This site isn't available") { throw "neutral block page not shown" }
+          if ($page -match "(?i)squid|X-Cache|Via:") { throw "block page or headers still mention Squid" }
+          Write-Host "OK: neutral block page, no Squid headers"
+          if (@(Get-ChildItem C:\Squid\etc\squid\blighter\errors -Filter ERR_*).Count -lt 40) { throw "error pages missing" }
+          Get-ChildItem C:\Squid\usr\share\squid\errors -Directory -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object { Write-Host "stock errors folder: $($_.Name)" }
       - name: Parent app SSH code against Windows OpenSSH
         shell: pwsh
         run: |
@@ -160,7 +215,9 @@ jobs:
           from blighter_parent.remote import Remote
           class C: ip='127.0.0.1'; port=22; admin_user='blighter'; name='CI'; child_user='testkid'
           r = Remote(C(), sys.argv[1], tempfile.mktemp())
-          st = r.status()
+          import time
+          t = time.monotonic(); cfg = r.get(); print('get over SSH: %.1f s' % (time.monotonic() - t))
+          t = time.monotonic(); st = r.status(); print('status over SSH: %.1f s' % (time.monotonic() - t))
           print('windows detected:', r.windows, '| squid running:', st['squid_running'], '| firewall:', st['firewall_active'])
           assert r.windows and st['platform'] == 'windows' and st['firewall_active']
           res = r.apply('block-all-allow-some', ['.example.com'], [])
@@ -210,25 +267,4 @@ jobs:
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\BlighterChild\blighter-setup.ps1 -Remove -Yes
           Start-Sleep -Seconds 15
-          $before = Get-Content "$env:RUNNER_TEMP\before.json" -Raw | ConvertFrom-Json
-          $bad = @()
-          $profiles = @(Get-NetFirewallProfile -PolicyStore PersistentStore | ForEach-Object { "$($_.Name)=$($_.Enabled)/$($_.DefaultOutboundAction)" })
-          if (($profiles -join ",") -ne ($before.profiles -join ",")) { $bad += "firewall profiles: $($profiles -join ',') vs $($before.profiles -join ',')" }
-          $on = @(Get-NetFirewallRule -Direction Outbound -Action Allow -Enabled True | Where-Object { $_.Group -ne "Blighter Restrictor" }).Count
-          if ($on -ne $before.outbound_allow_on) { $bad += "outgoing allow rules on: $on vs $($before.outbound_allow_on)" }
-          if (Get-NetFirewallRule -Group "Blighter Restrictor" -ErrorAction SilentlyContinue) { $bad += "Blighter firewall rules left" }
-          if (Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -ErrorAction SilentlyContinue) { $bad += "scheduled tasks left" }
-          if (Get-LocalUser blighter -ErrorAction SilentlyContinue) { $bad += "blighter account left" }
-          $sshd = Get-Service sshd -ErrorAction SilentlyContinue
-          if (-not $before.sshd -and $sshd -and ($sshd.Status -eq "Running" -or "$($sshd.StartType)" -ne "Disabled")) { $bad += "sshd still running/enabled: $($sshd.Status) $($sshd.StartType)" }
-          if (-not $before.sshd -and (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue | Where-Object Enabled -eq "True")) { $bad += "OpenSSH firewall rule left on" }
-          if (-not $before.squid -and (Test-Path C:\Squid\bin\squid.exe)) { $bad += "Squid still installed" }
-          $v = (Get-ItemProperty HKLM:\SOFTWARE\Policies\Google\Chrome -ErrorAction SilentlyContinue).ProxySettings
-          if ($v -ne "PRE-EXISTING") { $bad += "Chrome policy not restored ($v)" }
-          if (Get-ItemProperty HKLM:\SOFTWARE\Policies\Microsoft\Edge -Name ProxySettings -ErrorAction SilentlyContinue) { $bad += "Edge policy left" }
-          if (Test-Path HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Proxy) { $bad += "Firefox policy left" }
-          if (Test-Path C:\ProgramData\BlighterChild) { $bad += "C:\ProgramData\BlighterChild left" }
-          Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
-          Write-Host "OK: direct web access works again after removal"
-          if ($bad) { $bad | ForEach-Object { Write-Host "NOT RESTORED: $_" }; throw "$($bad.Count) difference(s) after removal" }
-          Write-Host "OK: laptop settings match the state recorded before setup"
+          & "$env:RUNNER_TEMP\compare.ps1"

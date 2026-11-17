@@ -32,6 +32,7 @@ cp -a child/files/. "$C/"
 cp -a child/DEBIAN "$C/DEBIAN"
 sed -i "s/^Version: .*/Version: $VER/" "$C/DEBIAN/control"
 install -D -m 644 common/domains.py "$C/usr/lib/blighter-child/domains.py"
+install -D -m 644 common/blockpage.py "$C/usr/lib/blighter-child/blockpage.py"
 chmod 755 "$C/usr/sbin/"*
 mkdir -p "$C/usr/share/doc/blighter-child" && grep -v "^#" packaging-copyright > "$C/usr/share/doc/blighter-child/copyright"
 dpkg-deb --root-owner-group --build "$C" "$OUT/blighter-child_${VER}_all.deb"

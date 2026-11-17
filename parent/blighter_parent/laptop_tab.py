@@ -9,6 +9,8 @@
 # rules.  "Reload Squid" re-reads the configuration on demand.
 # Ubuntu and Windows laptops report the same fields; on Windows the
 # firewall covers the whole laptop rather than only the child's account.
+# The settings files are read first and shown at once; the slower health
+# checks follow in a second request.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -103,17 +105,38 @@ class LaptopTab(QWidget):
         self._enable(child is not None)
 
     def refresh(self):
+        # Two steps so the parent is not left staring at an empty tab: the
+        # settings files ("get") come back in a second or two; the health
+        # checks ("status") can take longer on Windows, so they follow.
         if not self.child:
             return
         child = self.child
-        self.status.emit(f"Reading configuration from {child.name}'s laptop…")
+        self.status.emit(f"Reading settings from {child.name}'s laptop…")
+        for k in ("platform", "child_user", "child_is_admin", "squid_running", "squid_version",
+                  "squid_conf_managed", "firewall_active", "voice_udp", "proxy_locked", "helper_version"):
+            self.fields[k].setText("…")
 
-        def job():
-            r = self.remotes.get(child)
-            return r.status(), r.get()
+        def got_cfg(cfg):
+            if child is not self.child:
+                return
+            self.fields["mode"].setText(MODE_NAMES.get(cfg.get("mode"), cfg.get("mode")))
+            self.texts["rules_conf"].setPlainText(cfg.get("rules_conf", ""))
+            self.texts["allow"].setPlainText("\n".join(cfg.get("allow", [])))
+            self.texts["block"].setPlainText("\n".join(cfg.get("block", [])))
+            self.texts["squid_conf"].setPlainText(cfg.get("squid_conf", ""))
+            self.texts["firewall_rules"].setPlainText("Checking…")
+            self.status.emit(f"Settings read.  Checking {child.name}'s laptop health "
+                             "(firewall, Squid, accounts) - this can take up to a minute…")
+            run_bg(lambda: self.remotes.get(child).status(), got_status, failed)
 
-        def ok(res):
-            st, cfg = res
+        def failed(msg):
+            if child is self.child:
+                for f in self.fields.values():
+                    if f.text() == "…":
+                        f.setText("-")
+            self.status.emit(msg)
+
+        def got_status(st):
             if child is not self.child:
                 return
             f = self.fields
@@ -137,7 +160,6 @@ class LaptopTab(QWidget):
                              "Windows' network settings.")
             notes += [w for w in st.get("warnings", []) if "ADMINISTRATOR" not in w]
             self.warning.setText("\n\n".join(notes))
-            f["mode"].setText(MODE_NAMES.get(cfg.get("mode"), cfg.get("mode")))
             f["squid_running"].setText(_flag(st.get("squid_running")))
             f["squid_version"].setText(st.get("squid_version", "?"))
             f["squid_conf_managed"].setText(_flag(st.get("squid_conf_managed")))
@@ -147,14 +169,10 @@ class LaptopTab(QWidget):
             f["proxy_locked"].setText(_flag(st.get("proxy_locked")) + (
                 "  (browser policies; Windows proxy page locked)" if win else ""))
             f["helper_version"].setText(st.get("helper_version", "?"))
-            self.texts["rules_conf"].setPlainText(cfg.get("rules_conf", ""))
-            self.texts["allow"].setPlainText("\n".join(cfg.get("allow", [])))
-            self.texts["block"].setPlainText("\n".join(cfg.get("block", [])))
-            self.texts["squid_conf"].setPlainText(cfg.get("squid_conf", ""))
             self.texts["firewall_rules"].setPlainText(st.get("firewall_rules", ""))
             self.status.emit(f"Configuration read from {child.name}'s laptop.")
 
-        run_bg(job, ok, self.status.emit)
+        run_bg(lambda: self.remotes.get(child).get(), got_cfg, failed)
 
     def reload_squid(self):
         if not self.child:

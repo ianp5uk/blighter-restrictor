@@ -339,7 +339,7 @@ class MainWindow(QMainWindow):
         c = self.current
         if not c:
             return
-        self.say(f"Testing connection to {c.name}'s laptop…")
+        self.say(f"Testing connection to {c.name}'s laptop (this can take up to a minute)…")
 
         def ok(st):
             self.say(f"{c.name}: connected - Squid {'running' if st.get('squid_running') else 'NOT running'}, "

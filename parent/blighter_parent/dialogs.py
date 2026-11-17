@@ -123,7 +123,7 @@ class ChildDialog(QDialog):
         except ValueError as e:
             self.result_label.setText(f"<span style='color:#c0392b'>{e}</span>")
             return
-        self.result_label.setText("Connecting…")
+        self.result_label.setText("Connecting and checking the laptop (this can take up to a minute)…")
 
         def job():
             r = Remote(child, pw, self.store.known_hosts)

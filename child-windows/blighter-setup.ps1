@@ -22,6 +22,13 @@
 #   9. offers to mark the current network as Private (needed for SSH);
 #      the change is recorded so removal can undo it
 #
+# It takes 15-30 minutes in all.  It says so first, and says which steps are
+# slow; long steps print "still working" every 30 seconds.  If setup stops
+# part-way (an error, or Ctrl+C), it offers to undo what it has done so far
+# (default yes).  A marker file (state\setup-incomplete.txt) records an
+# unfinished setup; running setup again then offers to finish or undo it,
+# and the parent app shows a warning.
+#
 # Removal (-Remove) puts the laptop back as it was before step 3: firewall,
 # proxy and browser settings, network types, and - if setup added them -
 # deletes the blighter account and stops and uninstalls OpenSSH Server and
@@ -32,7 +39,8 @@
 #   blighter-setup.ps1 -Remove [-Yes]        undo everything
 # -Yes answers every question with its default (for automated tests); the
 # blighter password is then taken from the BLIGHTER_ADMIN_PASSWORD
-# environment variable.
+# environment variable.  -TestFailAt <step> (tests only) stops with an error
+# at the start of that step, to check that the undo works.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -47,11 +55,15 @@ param(
     [switch]$NoVoice,
     [string]$DnsServers = "1.1.1.1 8.8.8.8",
     [switch]$Remove,
-    [switch]$Yes
+    [switch]$Yes,
+    [int]$TestFailAt = 0
 )
 
 $ErrorActionPreference = "Stop"
-$Version   = "1.2.1"
+# Progress bars are hidden (they flash on and off and look like a fault);
+# slow steps print their own "still working" lines instead.
+$ProgressPreference    = "SilentlyContinue"
+$Version   = "1.2.2"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -64,10 +76,62 @@ $StateDir  = Join-Path $Dest "state"
 $PreFile   = Join-Path $StateDir "pre-install.json"
 $NetFile   = Join-Path $StateDir "networks-changed.txt"
 $System    = Join-Path $Dest "blighter-system.ps1"
+$Marker    = Join-Path $StateDir "setup-incomplete.txt"
 
 function Say($m)  { Write-Host ""; Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "WARNING: $m" -ForegroundColor Yellow }
 function Die($m)  { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
+$script:StepStart = $null
+function Write-StepTime {
+    if ($script:StepStart) {
+        $t = (Get-Date) - $script:StepStart
+        Write-Host ("    (that step took {0}:{1:00})" -f [int][math]::Floor($t.TotalMinutes), $t.Seconds) -ForegroundColor DarkGray
+    }
+    $script:StepStart = Get-Date
+}
+function Step([int]$n, [string]$title, [string]$time) {
+    Write-StepTime
+    Say "$n/9 $title"
+    if ($time) { Write-Host "    (usually $time)" -ForegroundColor DarkGray }
+    if ($TestFailAt -eq $n) { Die "Test failure requested at step $n (-TestFailAt)." }
+}
+
+function Write-StillWorking([string]$what, [datetime]$start) {
+    $t = (Get-Date) - $start
+    Write-Host ("    ... still {0} - {1}:{2:00} so far.  This is normal; please wait." -f $what, [int][math]::Floor($t.TotalMinutes), $t.Seconds)
+}
+
+function Invoke-Slow([string]$what, [scriptblock]$block, [object[]]$argList = @()) {
+    # Run a long PowerShell command in the background and say "still working"
+    # every 30 seconds, so the window never looks frozen.  Errors are passed on.
+    $start = Get-Date
+    $job = Start-Job -ScriptBlock $block -ArgumentList $argList
+    try {
+        while (-not (Wait-Job $job -Timeout 30)) { Write-StillWorking $what $start }
+        if ($job.State -eq "Failed") {
+            $reason = $job.ChildJobs[0].JobStateInfo.Reason
+            throw $(if ($reason) { $reason.Message } else { "$what failed" })
+        }
+        return (Receive-Job $job -ErrorAction Stop)
+    } finally {
+        Stop-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Start-Slow([string]$what, [string]$exe, [string]$arguments) {
+    # Run a program in this window, saying "still working" every 30 seconds;
+    # returns its exit code.
+    $start = Get-Date
+    $p = Start-Process -FilePath $exe -ArgumentList $arguments -NoNewWindow -PassThru
+    $null = $p.Handle          # (Windows PowerShell needs this to read the exit code later)
+    try {
+        while (-not $p.WaitForExit(30000)) { Write-StillWorking $what $start }
+        return $p.ExitCode
+    } finally {
+        if (-not $p.HasExited) { try { $p.Kill() } catch { } }
+    }
+}
 function Ask($q, $default = "n") {
     if ($Yes) { return ($default -eq "y") }
     $a = Read-Host "$q [$(if ($default -eq 'y') {'Y/n'} else {'y/N'})]"
@@ -247,8 +311,45 @@ if ($Remove) {
     exit 0
 }
 
+# ------------------------------------------------------------ before start ---
+Write-Host ""
+Write-Host "  Blighter Restrictor $Version - child laptop setup" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  This takes about 15-30 minutes.  The slow steps are:"
+Write-Host "     3/9  restore point                          1-5 minutes"
+Write-Host "     4/9  downloading and installing Squid       1-5 minutes"
+Write-Host "     6/9  OpenSSH Server from Windows Update     2-20 minutes"
+Write-Host "     8/9  firewall                               1-3 minutes"
+Write-Host "  During slow steps the window prints a 'still working' line every"
+Write-Host "  30 seconds.  That is normal - please do not close the window."
+Write-Host "  Keep the laptop plugged in and on the home Wi-Fi."
+Write-Host ""
+Write-Host "  If you need to stop part-way, press Ctrl+C: setup will offer to undo"
+Write-Host "  what it has done so far.  If the laptop is switched off part-way,"
+Write-Host "  run 'Install Blighter Child.cmd' again - it will offer to finish or undo."
+Write-Host ""
+if (Test-Path $Marker) {
+    Warn "An earlier setup on this laptop did not finish (started $(Get-Content $Marker -TotalCount 1))."
+    if (Ask "Undo what it did, instead of carrying on with setup?" "n") {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "blighter-setup.ps1") -Remove
+        exit $LASTEXITCODE
+    }
+    Write-Host "Carrying on - setup is safe to run again and will finish the job."
+} elseif (-not (Ask "Start now?" "y")) {
+    Write-Host "Nothing has been changed.  Run 'Install Blighter Child.cmd' when you have time."
+    exit 0
+}
+
+# Stop the laptop going to sleep while setup runs (until this window closes).
+try {
+    Add-Type -Namespace Blighter -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);'
+    [Blighter.Power]::SetThreadExecutionState([uint32]"0x80000001") | Out-Null   # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+} catch { }
+
+$SetupDone = $false
+try {
 # ------------------------------------------------------ 1. child account ---
-Say "1/9 The child's account"
+Step 1 "The child's account" "a few seconds"
 $locals = @(Get-LocalUser | Where-Object { $_.Enabled -and $_.Name -ne $Admin -and $_.Name -notin @("Administrator", "Guest", "DefaultAccount", "WDAGUtilityAccount") })
 if (-not $Child) {
     Write-Host "Accounts on this laptop:"
@@ -280,12 +381,12 @@ if ($isAdmin) {
 }
 
 # --------------------------------------------------------- 2. helper files ---
-Say "2/9 Helper files in $Dest"
+Step 2 "Helper files in $Dest" "under a minute"
 if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest | Out-Null }
 Lock-Folder $Dest
 if ((Resolve-Path $Src).Path.TrimEnd('\') -ne (Resolve-Path $Dest).Path.TrimEnd('\')) {
     foreach ($item in "blighter-apply.py", "blighter-apply.cmd", "blighter-system.ps1", "blighter-setup.ps1",
-                      "domains.py", "squid.conf", "python", "LICENSE.txt", "Remove Blighter Child.cmd",
+                      "domains.py", "blockpage.py", "squid.conf", "python", "LICENSE.txt", "Remove Blighter Child.cmd",
                       "Pause Blighter Child.cmd", "Resume Blighter Child.cmd") {
         $from = Join-Path $Src $item
         if (-not (Test-Path $from)) { Die "Missing file $item next to this script - unzip the whole package first." }
@@ -308,7 +409,7 @@ ALLOW_VOICE_UDP="$voice"
 if ($LASTEXITCODE -ne 0) { Die "The bundled Python does not run on this laptop." }
 
 # ------------------------------------------- 3. restore point and backup ---
-Say "3/9 Restore point and a record of the current settings"
+Step 3 "Restore point and a record of the current settings" "1-5 minutes"
 if (-not (Test-Path $PreFile)) {
     try {
         # Windows allows one restore point per 24 hours unless told otherwise.
@@ -316,7 +417,11 @@ if (-not (Test-Path $PreFile)) {
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
         if (-not (Test-Path $srKey)) { New-Item -Path $srKey -Force | Out-Null }
         New-ItemProperty -Path $srKey -Name SystemRestorePointCreationFrequency -Value 0 -PropertyType DWord -Force | Out-Null
-        Checkpoint-Computer -Description "Before Blighter Restrictor" -RestorePointType MODIFY_SETTINGS
+        Write-Host "Creating a Windows restore point..."
+        Invoke-Slow "creating the restore point" {
+            $ErrorActionPreference = "Stop"
+            Checkpoint-Computer -Description "Before Blighter Restrictor" -RestorePointType MODIFY_SETTINGS
+        } | Out-Null
         Remove-ItemProperty -Path $srKey -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue
         if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
         Set-Content -Path (Join-Path $StateDir "restore-point.txt") -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
@@ -328,21 +433,28 @@ if (-not (Test-Path $PreFile)) {
 }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $System capture
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $PreFile)) { Die "Could not save the current settings - nothing else has been changed." }
+# From here on there is something to undo: mark setup as unfinished until the end.
+Set-Content -Path $Marker -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 
 # ------------------------------------------------------------- 4. Squid ---
-Say "4/9 Squid for Windows"
+Step 4 "Squid for Windows" "1-5 minutes"
 $root = Get-SquidRoot
 if (-not $root) {
     Write-Host "Squid is not installed - downloading it from Diladele..."
     $msi = Join-Path $env:TEMP "squid-blighter.msi"
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $SquidUrl -OutFile $msi -UseBasicParsing
+        Invoke-Slow "downloading Squid" {
+            param($url, $file)
+            $ErrorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
+        } @($SquidUrl, $msi) | Out-Null
     } catch {
         Die "Download failed ($($_.Exception.Message)).  Install Squid yourself from $SquidPage and run this again."
     }
-    $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart INSTALLFOLDER=`"C:\Squid\`"" -Wait -PassThru
-    if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { Die "The Squid installer failed (code $($p.ExitCode))." }
+    Write-Host "Installing Squid..."
+    $code = Start-Slow "installing Squid" "msiexec.exe" "/i `"$msi`" /qn /norestart INSTALLFOLDER=`"C:\Squid\`""
+    if ($code -ne 0 -and $code -ne 3010) { Die "The Squid installer failed (code $code)." }
     Remove-Item $msi -Force -ErrorAction SilentlyContinue
     $root = Get-SquidRoot
     if (-not $root) { Die "Squid did not install correctly." }
@@ -353,7 +465,7 @@ Lock-Folder $root
 Write-Host "Squid folder locked: only administrators can change it."
 
 # ------------------------------------------------------- 5. admin account ---
-Say "5/9 Administrator account '$Admin'"
+Step 5 "Administrator account '$Admin'" "a few seconds, plus typing the password"
 $user = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
 $setPw = $true
 if ($user) {
@@ -396,11 +508,19 @@ if (-not (Test-Path $ul)) { New-Item -Path $ul -Force | Out-Null }
 New-ItemProperty -Path $ul -Name $Admin -Value 0 -PropertyType DWord -Force | Out-Null
 
 # --------------------------------------------------------------- 6. SSH ---
-Say "6/9 OpenSSH Server"
-$cap = Get-WindowsCapability -Online -Name "OpenSSH.Server*" | Select-Object -First 1
-if ($cap -and $cap.State -ne "Installed") {
-    Write-Host "Installing OpenSSH Server (this can take a few minutes)..."
-    Add-WindowsCapability -Online -Name $cap.Name | Out-Null
+Step 6 "OpenSSH Server" "2-20 minutes if it has to be installed"
+Write-Host "Checking Windows' optional features..."
+$cap = Invoke-Slow "checking Windows' optional features" {
+    $ErrorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"
+    Get-WindowsCapability -Online -Name "OpenSSH.Server*" | Select-Object -First 1 Name, State
+}
+if ($cap -and "$($cap.State)" -ne "Installed") {
+    Write-Host "Installing OpenSSH Server from Windows Update (2-20 minutes, depending on the connection)..."
+    Invoke-Slow "installing OpenSSH Server" {
+        param($name)
+        $ErrorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"
+        Add-WindowsCapability -Online -Name $name | Out-Null
+    } @($cap.Name) | Out-Null
 }
 if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Die "OpenSSH Server did not install.  Add it in Settings > System > Optional features." }
 Set-Service sshd -StartupType Automatic
@@ -412,7 +532,7 @@ if ((Test-Path $cfg) -and (Select-String -Path $cfg -Pattern '^\s*PasswordAuthen
 Write-Host "SSH server running."
 
 # -------------------------------------------------------------- 7. squid.conf ---
-Say "7/9 Squid configuration"
+Step 7 "Squid configuration" "under a minute"
 $conf = Join-Path $root "etc\squid\squid.conf"
 if ((Test-Path $conf) -and -not ((Get-Content $conf -TotalCount 5) -match "Blighter Restrictor")) {
     $bak = "$conf.pre-blighter-" + (Get-Date -Format "yyyyMMdd-HHmmss")
@@ -442,12 +562,12 @@ if (-not (Get-Process squid -ErrorAction SilentlyContinue)) { Warn "squid.exe is
 Write-Host "Squid configured (DNS servers: $dnsList)."
 
 # --------------------------------------------- 8. firewall, proxy, repair ---
-Say "8/9 Firewall (whole laptop), proxy settings and self-repair task"
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $System enable
-if ($LASTEXITCODE -ne 0) { Die "Firewall setup failed - see the messages above." }
+Step 8 "Firewall (whole laptop), proxy settings and self-repair task" "1-3 minutes"
+$code = Start-Slow "setting up the firewall" "powershell.exe" "-NoProfile -ExecutionPolicy Bypass -File `"$System`" enable"
+if ($code -ne 0) { Die "Firewall setup failed - see the messages above." }
 
 # ------------------------------------------------------- 9. network type ---
-Say "9/9 Network type"
+Step 9 "Network type" "a few seconds"
 $profiles = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)
 foreach ($np in $profiles) {
     Write-Host ("  {0}: {1}" -f $np.Name, $np.NetworkCategory)
@@ -457,6 +577,30 @@ foreach ($np in $profiles) {
             Set-NetConnectionProfile -InterfaceIndex $np.InterfaceIndex -NetworkCategory Private
             Add-Content -Path $NetFile -Value ("{0}`t{1}" -f $np.InterfaceAlias, "Public")
             Write-Host "  '$($np.Name)' is now Private (removal sets it back)."
+        }
+    }
+}
+
+Write-StepTime
+Remove-Item $Marker -Force -ErrorAction SilentlyContinue
+$SetupDone = $true
+} finally {
+    # Runs after an error (Die), an unexpected failure, or Ctrl+C.
+    if (-not $SetupDone) {
+        Write-Host ""
+        Write-Host "Setup did NOT finish." -ForegroundColor Red
+        if (Test-Path $PreFile) {
+            $undo = $true
+            try { $undo = Ask "Undo the changes made so far (recommended)?" "y" } catch { $undo = $true }
+            if ($undo) {
+                Write-Host "Undoing - this can take a few minutes; please wait for 'Done'..."
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "blighter-setup.ps1") -Remove -Yes
+            } else {
+                Write-Host "Left as it is.  Run 'Install Blighter Child.cmd' again to finish setup,"
+                Write-Host "or 'Remove Blighter Child.cmd' in $Dest to undo it."
+            }
+        } else {
+            Write-Host "Nothing on the laptop had been changed yet, apart from copying files to $Dest."
         }
     }
 }
