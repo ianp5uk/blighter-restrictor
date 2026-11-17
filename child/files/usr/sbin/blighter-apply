@@ -127,6 +127,12 @@ def save_discord(allowed):
         lines += ["# yes = Discord allowed (Squid rules and UDP 50000-65535 for voice/video)",
                   f'ALLOW_VOICE_UDP="{value}"']
     write(CHILD_CONF, "\n".join(lines) + "\n")
+    # Keep the permissions blighter-setup gave it (write() uses Squid's 0640 root:proxy).
+    os.chmod(CHILD_CONF, 0o644)
+    try:
+        shutil.chown(CHILD_CONF, "root", "root")
+    except (LookupError, PermissionError):
+        pass
 
 
 def apply_discord_firewall():
