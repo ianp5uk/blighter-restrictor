@@ -188,11 +188,32 @@ class Remote:
     def status(self):
         return self._json(["status"])
 
-    def apply(self, mode, allow, block, discord=None):
+    def apply(self, mode, allow, block, discord=None, home_net=None):
         data = {"mode": mode, "allow": allow, "block": block}
         if discord is not None:          # older laptops (before 1.2.2) have no Discord switch
             data["discord"] = bool(discord)
+        if home_net is not None:         # older laptops (before 1.2.3) have no home network setting
+            data["home_net"] = home_net
         return self._json(["set"], json.dumps(data))
+
+    def pause(self):
+        return self._json_t(["pause"], 300)
+
+    def resume(self):
+        return self._json_t(["resume"], 300)
+
+    def netinfo(self):
+        return self._json_t(["netinfo"], 90)
+
+    def _json_t(self, args, timeout):
+        code, out, err = self.run_helper(args, timeout=timeout)
+        try:
+            return json.loads(out)
+        except ValueError:
+            if "usage" in (err + out).lower():
+                raise RemoteError("This laptop's Blighter child version is too old for this - "
+                                  "update it to 1.2.3 or later.")
+            raise RemoteError(f"Unexpected reply from laptop (exit {code}): {(err or out)[:800]}")
 
     def reload(self):
         return self._json(["reload"])

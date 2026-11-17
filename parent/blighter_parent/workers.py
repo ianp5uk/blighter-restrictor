@@ -4,7 +4,11 @@
 # Purpose: run slow network work (SSH, log downloads, reachability checks) on
 # a thread pool so the window never freezes, and deliver the result or error
 # back on the GUI thread through a Qt signal.
-# Usage:  run_bg(function, on_ok=callback(result), on_err=callback(message))
+# Usage:  run_bg(function, on_ok=callback(result), on_err=callback(message),
+#                quiet=False)
+# Every job that is not "quiet" counts as the app being busy: busy_signal()
+# reports how many are running, so the main window can show "Working…".
+# (Background polling - reachability, Live log refresh - is quiet.)
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -23,6 +27,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 class _Dispatcher(QObject):
     """Lives on the GUI thread; calls callbacks there."""
     deliver = Signal(object, object)
+    busy_changed = Signal(int)
 
     def __init__(self):
         super().__init__()
@@ -35,6 +40,19 @@ class _Dispatcher(QObject):
 
 
 _dispatcher = None
+_busy = 0
+
+
+def _get_dispatcher():
+    global _dispatcher
+    if _dispatcher is None:
+        _dispatcher = _Dispatcher()
+    return _dispatcher
+
+
+def busy_signal():
+    """Signal(int): number of non-quiet jobs running (0 = idle)."""
+    return _get_dispatcher().busy_changed
 
 
 class _Job(QRunnable):
@@ -54,8 +72,20 @@ class _Job(QRunnable):
         _dispatcher.deliver.emit(self.on_ok, result)
 
 
-def run_bg(fn, on_ok=None, on_err=None):
-    global _dispatcher
-    if _dispatcher is None:
-        _dispatcher = _Dispatcher()
+def run_bg(fn, on_ok=None, on_err=None, quiet=False):
+    d = _get_dispatcher()
+    if not quiet:
+        global _busy
+        _busy += 1
+        d.busy_changed.emit(_busy)
+
+        def finished(callback):
+            def call(value):
+                global _busy
+                _busy = max(0, _busy - 1)
+                d.busy_changed.emit(_busy)
+                if callback:
+                    callback(value)
+            return call
+        on_ok, on_err = finished(on_ok), finished(on_err)
     QThreadPool.globalInstance().start(_Job(fn, on_ok, on_err))

@@ -6,6 +6,8 @@
 # range, text search, blocked-only.  "Live" refreshes every 5 seconds.
 # Right-click a row to add the site (or its parent domain) to the allow or
 # block list in the Rules tab.
+# While a download runs, Refresh and the download options are greyed out
+# (Live refreshes run quietly in the background).
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -174,14 +176,17 @@ class ActivityTab(QWidget):
             return
         child, n, rot = self.child, self.lines.value(), self.rotated.isChecked()
         self.busy = True
-        if not self.live.isChecked():
+        live = self.live.isChecked()
+        if not live:
             self.status.emit(f"Downloading {child.name}'s activity log…")
+            self._controls(False)
 
         def job():
             return accesslog.parse(self.remotes.get(child).log(n, rot))
 
         def ok(entries):
             self.busy = False
+            self._controls(True)
             if child is self.child:
                 self.entries = entries
                 self._apply_filters()
@@ -190,10 +195,16 @@ class ActivityTab(QWidget):
 
         def err(msg):
             self.busy = False
+            self._controls(True)
             self.live.setChecked(False)
             self.status.emit(msg)
 
-        run_bg(job, ok, err)
+        run_bg(job, ok, err, quiet=live)
+
+    def _controls(self, on):
+        """Grey out Refresh and the download options while a download runs."""
+        for w in (self.btn_refresh, self.lines, self.rotated, self.live):
+            w.setEnabled(on and (self.child is not None or w is not self.btn_refresh))
 
     def _apply_filters(self):
         _, rng = RANGES[self.range.currentIndex()]

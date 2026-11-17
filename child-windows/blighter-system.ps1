@@ -9,7 +9,9 @@
 #   * Outgoing traffic is blocked by default on all network profiles.
 #   * Allowed out: squid.exe (the filter itself), Windows' own services
 #     (DNS, DHCP, time, Windows Update, Defender, network status check),
-#     ping, and - unless switched off - UDP 50000-65535 (Discord voice/video).
+#     ping, and - unless switched off - UDP 50000-65535 (Discord voice/video)
+#     and the home network (HOME_NETS in child.conf: printers, NAS drives...;
+#     Blighter controls internet access only).
 #   * Every other "allow outgoing" firewall rule (Store apps, games, Xbox...)
 #     is switched off; their names are recorded so they can be switched on again.
 #   * Incoming SSH (port 22) is allowed only from the local subnet and only
@@ -33,13 +35,16 @@
 #             keeps working so the parent app can still connect.
 #   resume    switch filtering back on after "pause"
 #   disable   undo everything this script did (used by blighter-setup.ps1 -Remove)
-#   voice     add or remove the Discord voice rule (UDP 50000-65535) to match
-#             ALLOW_VOICE_UDP in child.conf (run by blighter-apply.py when the
-#             parent app's "Allow Discord" switch changes; nothing while paused)
+#   options   add, change or remove the Discord voice rule (UDP 50000-65535)
+#             and the home network rule to match child.conf (run by
+#             blighter-apply.py when the parent app's switches change; nothing
+#             while paused).  "voice" is the 1.2.2 name for the same thing.
+#   netinfo   JSON list of this laptop's current networks (adapters with a
+#             default route): address, prefix length and network name
 #   status    print a JSON summary (used by blighter-apply.py "status")
 #
 # Usage (as administrator):
-#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|pause|resume|disable|voice|status
+#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|pause|resume|disable|options|netinfo|status
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -49,7 +54,7 @@
 # any later version.  It is distributed WITHOUT ANY WARRANTY; see the
 # LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
-param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "voice", "status")][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "options", "voice", "netinfo", "status")][string]$Action)
 
 $ErrorActionPreference = "Stop"
 # No progress bars: each firewall cmdlet would otherwise flash one, which is
@@ -83,7 +88,7 @@ $SquidExe  = Join-Path $SquidRoot "bin\squid.exe"
 $SquidSvc  = Join-Path $SquidRoot "bin\Diladele.Squid.Service.exe"
 
 function Read-ChildConf {
-    $c = @{ CHILD_USER = ""; CHILD_SID = ""; ALLOW_VOICE_UDP = "yes" }
+    $c = @{ CHILD_USER = ""; CHILD_SID = ""; ALLOW_VOICE_UDP = "yes"; HOME_NET_ALLOWED = "yes"; HOME_NETS = "" }
     if (Test-Path $ChildConf) {
         foreach ($line in Get-Content $ChildConf) {
             if ($line -match '^\s*([A-Z_]+)\s*=\s*"?(.*?)"?\s*$') { $c[$Matches[1]] = $Matches[2] }
@@ -124,6 +129,9 @@ function Get-WantedRules([bool]$voice) {
     )
     if ($voice) {
         $rules += @{ Name = "BR-Voice"; Display = "Blighter: Discord voice/video (UDP 50000-65535)"; Protocol = "UDP"; RemotePort = "50000-65535" }
+    }
+    if ($HomeNets.Count) {
+        $rules += @{ Name = "BR-HomeNet"; Display = "Blighter: home network (printers, NAS...)"; RemoteAddress = $HomeNets }
     }
     return $rules
 }
@@ -189,6 +197,7 @@ function Enable-Firewall([bool]$voice, [bool]$force = $true) {
     if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
     foreach ($r in Get-WantedRules $voice) { Set-BlighterRule $r "Outbound" $force }
     if (-not $voice) { Remove-NetFirewallRule -Name "BR-Voice" -ErrorAction SilentlyContinue }
+    if (-not $HomeNets.Count) { Remove-NetFirewallRule -Name "BR-HomeNet" -ErrorAction SilentlyContinue }
     Set-BlighterRule (Get-SshRule) "Inbound" $force
     # Windows' own OpenSSH rule allows port 22 from anywhere on every profile - ours replaces it.
     # (Not recorded with the others: removal restores it from the "before" state.)
@@ -508,6 +517,9 @@ function Confirm-Services {
 # ----------------------------------------------------------------- actions ---
 $conf  = Read-ChildConf
 $voice = $conf.ALLOW_VOICE_UDP -ne "no"
+# Home network subnets, only while the switch is on (checked again by the helper).
+$HomeNets = @()
+if ($conf.HOME_NET_ALLOWED -ne "no") { $HomeNets = @("$($conf.HOME_NETS)" -split '\s+' | Where-Object { $_ -match '^[0-9a-fA-F:.]+(/\d{1,3})?$' }) }
 
 function Start-Filtering {
     Enable-Firewall $voice
@@ -569,15 +581,28 @@ switch ($Action) {
         } catch { Write-BLog "ERROR (proxy): $($_.Exception.Message)" }
         try { Confirm-Services } catch { Write-BLog "ERROR (services): $($_.Exception.Message)" }
     }
-    "voice" {
-        if (Test-Path $PausedFlag) { Write-BLog "Discord setting saved; it takes effect when filtering is resumed."; return }
-        if ($voice) {
-            Set-BlighterRule (Get-WantedRules $true | Where-Object { $_.Name -eq "BR-Voice" }) "Outbound" $true
-            Write-BLog "Discord voice/video rule (UDP 50000-65535) switched on."
-        } else {
-            Remove-NetFirewallRule -Name "BR-Voice" -ErrorAction SilentlyContinue
-            Write-BLog "Discord voice/video rule (UDP 50000-65535) removed."
+    { $_ -in "options", "voice" } {
+        if (Test-Path $PausedFlag) { Write-BLog "Settings saved; they take effect when filtering is resumed."; return }
+        $wanted = @(Get-WantedRules $voice)
+        foreach ($n in "BR-Voice", "BR-HomeNet") {
+            $r = $wanted | Where-Object { $_.Name -eq $n }
+            if ($r) { Set-BlighterRule $r "Outbound" $true }
+            else { Remove-NetFirewallRule -Name $n -ErrorAction SilentlyContinue }
         }
+        Write-BLog ("Firewall options: Discord voice " + $(if ($voice) { "on" } else { "off" }) +
+                    "; home network " + $(if ($HomeNets.Count) { $HomeNets -join " " } else { "off" }) + ".")
+    }
+    "netinfo" {
+        $out = @()
+        $ifs = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | ForEach-Object { $_.ifIndex } | Sort-Object -Unique)
+        foreach ($i in $ifs) {
+            $name = (Get-NetConnectionProfile -InterfaceIndex $i -ErrorAction SilentlyContinue | Select-Object -First 1).Name
+            if (-not $name) { $name = (Get-NetAdapter -InterfaceIndex $i -ErrorAction SilentlyContinue).Name }
+            foreach ($a in Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -ErrorAction SilentlyContinue) {
+                $out += [pscustomobject]@{ address = $a.IPAddress; prefix = [int]$a.PrefixLength; name = "$name" }
+            }
+        }
+        ConvertTo-Json -InputObject @($out) -Compress
     }
     "disable" {
         $pre = Read-PreState
@@ -616,11 +641,14 @@ switch ($Action) {
         # a minute; instead read every filter of each kind once and match them up
         # by InstanceID (a filter has the same InstanceID as its rule).
         $ours = @($all | Where-Object { $_.Group -eq $Group } | Sort-Object Name)
-        $ports = @{}; $apps = @{}; $svcs = @{}
+        $ports = @{}; $apps = @{}; $svcs = @{}; $addrs = @{}
         if ($ours.Count) {
             foreach ($f in Get-NetFirewallPortFilter -All -ErrorAction SilentlyContinue) { $ports[$f.InstanceID] = $f }
             foreach ($f in Get-NetFirewallApplicationFilter -All -ErrorAction SilentlyContinue) { $apps[$f.InstanceID] = $f }
             foreach ($f in Get-NetFirewallServiceFilter -All -ErrorAction SilentlyContinue) { $svcs[$f.InstanceID] = $f }
+            if ($ours | Where-Object { $_.Name -eq "BR-HomeNet" -or $_.Name -eq "BR-SSH-In" }) {
+                foreach ($f in Get-NetFirewallAddressFilter -All -ErrorAction SilentlyContinue) { $addrs[$f.InstanceID] = $f }
+            }
         }
         foreach ($r in $ours) {
             $port = $ports[$r.InstanceID]
@@ -632,6 +660,8 @@ switch ($Action) {
             if ($port.Protocol -and $port.Protocol -ne "Any") { $what += $port.Protocol }
             if ($port.RemotePort -and "$($port.RemotePort)" -ne "Any") { $what += "remote port " + ($port.RemotePort -join ",") }
             if ($port.LocalPort -and "$($port.LocalPort)" -ne "Any") { $what += "local port " + ($port.LocalPort -join ",") }
+            $ad = $addrs[$r.InstanceID]
+            if ($ad -and $ad.RemoteAddress -and "$($ad.RemoteAddress)" -ne "Any") { $what += "to " + ($ad.RemoteAddress -join ",") }
             $lines += ("  {0,-8} {1,-16} on={2,-5} {3}" -f $r.Direction, $r.Name, $r.Enabled, ($what -join "  "))
         }
         $lines += ""

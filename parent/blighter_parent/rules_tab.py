@@ -12,6 +12,10 @@
 # for voice/video calls, UDP 50000-65535 in the laptop's firewall).  It wins
 # over both lists, and is applied with them by "Apply to laptop".  Discord
 # lines typed into a list are pointed out, as they have no effect.
+# "Allow home network access" (with the home network's subnet(s)) lets the
+# laptop reach printers, NAS drives and other home devices: Blighter controls
+# internet access only.  "Use current network" asks the laptop which network
+# it is on now.  Both switches are applied with the lists.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -24,7 +28,7 @@
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QGroupBox, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QMessageBox, QPlainTextEdit,
                                QPushButton, QRadioButton, QSplitter, QVBoxLayout,
                                QWidget)
@@ -37,6 +41,14 @@ HELP = ("One domain per line.  <b>.example.com</b> = the site and all its subdom
         "<b>*.example.com</b> and pasted web addresses are converted automatically.")
 
 
+DISCORD_TIP = ("Discord is controlled here, not by the lists.  Takes effect when you "
+               "press 'Apply to laptop'.")
+DISCORD_OLD_TIP = "This laptop's Blighter child version has no Discord switch - update it to 1.2.2 or later."
+HOME_TIP = ("Lets the laptop reach the home network directly: printers, NAS drives and other home "
+            "devices.  Blighter controls internet access only.  Give the home network's subnet(s), "
+            "e.g. 192.168.1.0/24, separated by spaces.")
+
+
 class RulesTab(QWidget):
     status = Signal(str)
 
@@ -44,8 +56,10 @@ class RulesTab(QWidget):
         super().__init__(parent)
         self.remotes = remotes
         self.child = None
-        self.loaded = None  # (mode, allow_text, block_text, discord) as last read from the laptop
+        self.loaded = None  # (mode, allow_text, block_text, discord, home) as last read from the laptop
         self.discord_supported = False
+        self.home_supported = False
+        self.home_name = self.loaded_home_name = ""
         self.busy = False
 
         self.rb_block = QRadioButton("Allow all, block some")
@@ -60,13 +74,29 @@ class RulesTab(QWidget):
         mode_row.addWidget(self.rb_allow)
         mode_row.addSpacing(24)
         self.cb_discord = QCheckBox("Allow Discord (text, voice and video calls)")
-        self.cb_discord.setToolTip("Discord is controlled here, not by the lists.  Takes effect when you "
-                                   "press 'Apply to laptop'.")
+        self.cb_discord.setToolTip(DISCORD_TIP)
         self.cb_discord.toggled.connect(lambda *_: self._changed())
         mode_row.addWidget(self.cb_discord)
         mode_row.addStretch()
         self.dirty_label = QLabel("")
         mode_row.addWidget(self.dirty_label)
+
+        self.cb_home = QCheckBox("Allow home network access (printers, NAS…):")
+        self.cb_home.setToolTip(HOME_TIP)
+        self.home_edit = QLineEdit()
+        self.home_edit.setPlaceholderText("e.g. 192.168.1.0/24")
+        self.home_edit.setToolTip(HOME_TIP)
+        self.home_label = QLabel("")
+        self.btn_home = QPushButton("Use current network")
+        self.btn_home.setToolTip("Ask the laptop which network it is on now")
+        self.cb_home.toggled.connect(lambda *_: self._changed())
+        self.home_edit.textChanged.connect(lambda *_: self._changed())
+        self.btn_home.clicked.connect(self.use_current_network)
+        home_row = QHBoxLayout()
+        home_row.addWidget(self.cb_home)
+        home_row.addWidget(self.home_edit, 1)
+        home_row.addWidget(self.home_label)
+        home_row.addWidget(self.btn_home)
 
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self.block_edit = QPlainTextEdit()
@@ -116,6 +146,7 @@ class RulesTab(QWidget):
 
         lay = QVBoxLayout(self)
         lay.addLayout(mode_row)
+        lay.addLayout(home_row)
         lay.addWidget(help_label)
         lay.addWidget(split, 1)
         lay.addLayout(btns)
@@ -131,7 +162,7 @@ class RulesTab(QWidget):
 
     def _current(self):
         return (self.mode(), self.allow_edit.toPlainText().strip(), self.block_edit.toPlainText().strip(),
-                self.cb_discord.isChecked())
+                self.cb_discord.isChecked(), (self.cb_home.isChecked(), " ".join(self.home_edit.text().split())))
 
     def is_dirty(self):
         return self.loaded is not None and self._current() != self.loaded
@@ -141,6 +172,8 @@ class RulesTab(QWidget):
                   self.btn_reload, self.btn_tidy, self.btn_revert, self.btn_apply):
             w.setEnabled(on)
         self.cb_discord.setEnabled(on and self.discord_supported)
+        for w in (self.cb_home, self.home_edit, self.btn_home):
+            w.setEnabled(on and self.home_supported)
 
     def _changed(self):
         allow_mode = self.rb_allow.isChecked()
@@ -165,12 +198,22 @@ class RulesTab(QWidget):
                     if domains.is_discord(line):
                         self.issues.addItem(f"Note: {name} list - '{line}' is Discord, which the 'Allow Discord' "
                                             "switch controls; this line has no effect.")
+        if self.home_supported:
+            nets, errs, warns = domains.clean_subnets(self.home_edit.text().replace(",", " ").split())
+            for e in errs:
+                errors.append(e)
+                self.issues.addItem(f"ERROR Home network - {e}")
+            for w in warns:
+                self.issues.addItem(f"Warning: home network - {w}")
+            if self.cb_home.isChecked() and not nets and not errs:
+                self.issues.addItem("Note: home network access is on but no home network is given - "
+                                    "press 'Use current network' or type its subnet.")
         if self.mode() == domains.MODE_ALLOWLIST and not domains.entries_only(
                 domains.clean_list(self.allow_edit.toPlainText().splitlines())[0]):
             self.issues.addItem("Note: the allow list is empty - every site will be blocked.")
         return not errors
 
-    def _fill(self, mode, allow_lines, block_lines, discord=None):
+    def _fill(self, mode, allow_lines, block_lines, discord=None, home=None):
         for e in (self.block_edit, self.allow_edit):
             e.blockSignals(True)
         self.allow_edit.setPlainText("\n".join(allow_lines).strip())
@@ -182,9 +225,20 @@ class RulesTab(QWidget):
         self.cb_discord.blockSignals(True)
         self.cb_discord.setChecked(bool(discord) if discord is not None else True)
         self.cb_discord.blockSignals(False)
-        if not self.discord_supported:
-            self.cb_discord.setToolTip("This laptop's Blighter child version has no Discord switch - "
-                                       "update it to 1.2.2 or later.")
+        self.cb_discord.setToolTip(DISCORD_TIP if self.discord_supported else DISCORD_OLD_TIP)
+        self.home_supported = home is not None
+        for w in (self.cb_home, self.home_edit):
+            w.blockSignals(True)
+        self.cb_home.setChecked(bool(home.get("allowed", True)) if home else False)
+        self.home_edit.setText(" ".join(home.get("subnets", [])) if home else "")
+        for w in (self.cb_home, self.home_edit):
+            w.blockSignals(False)
+        self.home_name = self.loaded_home_name = (home or {}).get("name", "")
+        self._home_label()
+        tip = HOME_TIP if self.home_supported else ("This laptop's Blighter child version has no home "
+                                                    "network setting - update it to 1.2.3 or later.")
+        for w in (self.cb_home, self.home_edit, self.btn_home):
+            w.setToolTip(tip)
         self.loaded = self._current()
         self._changed()
 
@@ -209,7 +263,8 @@ class RulesTab(QWidget):
             self.busy = False
             if child is not self.child:
                 return
-            self._fill(data.get("mode"), data.get("allow", []), data.get("block", []), data.get("discord"))
+            self._fill(data.get("mode"), data.get("allow", []), data.get("block", []), data.get("discord"),
+                       data.get("home_net"))
             self._set_enabled(True)
             self.status.emit(f"Rules loaded from {child.name}'s laptop.")
 
@@ -232,9 +287,11 @@ class RulesTab(QWidget):
 
     def revert(self):
         if self.loaded:
-            mode, allow, block, discord = self.loaded
+            mode, allow, block, discord, (h_on, h_nets) = self.loaded
             self._fill(mode, allow.splitlines(), block.splitlines(),
-                       discord if self.discord_supported else None)
+                       discord if self.discord_supported else None,
+                       {"allowed": h_on, "subnets": h_nets.split(), "name": self.loaded_home_name}
+                       if self.home_supported else None)
 
     def add_domain(self, which, domain):
         """Called from the Activity tab: which is 'allow' or 'block'."""
@@ -258,6 +315,11 @@ class RulesTab(QWidget):
         block = self.block_edit.toPlainText().splitlines()
         mode = self.mode()
         discord = self.cb_discord.isChecked() if self.discord_supported else None
+        home = None
+        if self.home_supported:
+            home = {"allowed": self.cb_home.isChecked(),
+                    "subnets": self.home_edit.text().replace(",", " ").split(),
+                    "name": self.home_name}
         self.busy = True
         self._set_enabled(False)
         self.status.emit(f"Applying rules to {child.name}'s laptop…")
@@ -268,7 +330,7 @@ class RulesTab(QWidget):
             if res.get("ok"):
                 if child is self.child:
                     self._fill(res.get("mode"), res.get("allow", []), res.get("block", []),
-                               res.get("discord", discord))
+                               res.get("discord", discord), res.get("home_net", home))
                     for w in res.get("warnings", []):
                         self.issues.addItem("Squid: " + w)
                 self.status.emit(f"{child.name}: {res.get('message')}")
@@ -283,4 +345,46 @@ class RulesTab(QWidget):
             QMessageBox.critical(self, "Could not apply", msg)
             self.status.emit(msg)
 
-        run_bg(lambda: self.remotes.get(child).apply(mode, allow, block, discord), ok, err)
+        run_bg(lambda: self.remotes.get(child).apply(mode, allow, block, discord, home), ok, err)
+
+    def _home_label(self):
+        self.home_label.setText(f"({self.home_name})" if self.home_name else "")
+
+    def use_current_network(self):
+        """Fill in the network(s) the laptop is on now (private ranges first)."""
+        if not self.child or self.busy:
+            return
+        child = self.child
+        self.busy = True
+        self._set_enabled(False)
+        self.status.emit(f"Asking {child.name}'s laptop which network it is on…")
+
+        def ok(res):
+            self.busy = False
+            self._set_enabled(True)
+            if child is not self.child:
+                return
+            nets = res.get("networks", [])
+            private = [n for n in nets if n.get("private")]
+            pick = private or nets
+            if not pick:
+                QMessageBox.information(self, "No network found",
+                                        "The laptop doesn't seem to be on a network right now.")
+                self.status.emit(f"{child.name}: no current network found.")
+                return
+            self.home_edit.setText(pick[0]["subnet"])
+            self.home_name = pick[0].get("name", "")
+            self._home_label()
+            self.cb_home.setChecked(True)
+            others = ", ".join(n["subnet"] for n in nets if n is not pick[0])
+            self.status.emit(f"{child.name} is on {pick[0]['subnet']}"
+                             + (f" ({self.home_name})" if self.home_name else "")
+                             + (f"; also {others}" if others else "")
+                             + " - press 'Apply to laptop' to use it.")
+
+        def err(msg):
+            self.busy = False
+            self._set_enabled(True)
+            self.status.emit(msg)
+
+        run_bg(lambda: self.remotes.get(child).netinfo(), ok, err)

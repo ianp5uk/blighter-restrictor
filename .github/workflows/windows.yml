@@ -223,6 +223,28 @@ jobs:
           Write-Host "discord.com with Discord allowed -> $d"
           if ($d -eq "403" -or $d -eq "000") { throw "Discord still blocked (got $d)" }
           Write-Host "OK: Discord switch blocks and allows"
+          # Home network: detected at setup (the runner's private network), then
+          # switched off, then set to another subnet.
+          $ni = & $h netinfo
+          Write-Host "netinfo: $ni"
+          $g = (& $h get) | ConvertFrom-Json
+          Write-Host ("home_net after setup: " + ($g.home_net | ConvertTo-Json -Compress))
+          if ($g.home_net.subnets.Count -and -not (Get-NetFirewallRule -Name BR-HomeNet -ErrorAction SilentlyContinue)) { throw "BR-HomeNet missing after setup" }
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"home_net":{"allowed":false,"subnets":["192.168.77.0/24"]}}' | & $h set | ConvertFrom-Json
+          Write-Host "home off: $($r.message)"
+          if (-not $r.ok -or $r.home_net.allowed) { throw "home network off failed" }
+          if (Get-NetFirewallRule -Name BR-HomeNet -ErrorAction SilentlyContinue) { throw "BR-HomeNet still present when off" }
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"home_net":{"allowed":true,"subnets":["192.168.77.0/24","10.200.0.0/16"],"name":"CI net"}}' | & $h set | ConvertFrom-Json
+          Write-Host "home on: $($r.message)"
+          $a = (Get-NetFirewallRule -Name BR-HomeNet | Get-NetFirewallAddressFilter).RemoteAddress -join ","
+          Write-Host "BR-HomeNet remote addresses: $a"
+          if ($a -notmatch "192\.168\.77\.0" -or $a -notmatch "10\.200\.0\.0") { throw "BR-HomeNet addresses wrong: $a" }
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"home_net":{"allowed":true,"subnets":["not-a-net"]}}' | & $h set | ConvertFrom-Json
+          if ($r.ok) { throw "invalid home subnet was accepted" }
+          $st2 = & $h status | ConvertFrom-Json
+          if (-not $st2.firewall_active) { throw "firewall not active after home network changes: $($st2.firewall_rules)" }
+          if ($st2.firewall_rules -notmatch "BR-HomeNet") { throw "status does not list BR-HomeNet" }
+          Write-Host "OK: home network switch and subnets"
           $global:LASTEXITCODE = 0
           if (@(Get-ChildItem C:\Squid\etc\squid\blighter\errors -Filter ERR_*).Count -lt 40) { throw "error pages missing" }
           Get-ChildItem C:\Squid\usr\share\squid\errors -Directory -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object { Write-Host "stock errors folder: $($_.Name)" }
@@ -266,9 +288,11 @@ jobs:
       - name: Pause and resume
         shell: pwsh
         run: |
-          $sys = "C:\ProgramData\BlighterChild\blighter-system.ps1"
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sys pause
-          if ($LASTEXITCODE) { throw "pause failed" }
+          # As the parent app does it: the helper's pause / resume commands.
+          $h = "C:\ProgramData\BlighterChild\blighter-apply.cmd"
+          $r = & $h pause | ConvertFrom-Json
+          Write-Host "pause: $($r.message)"
+          if (-not $r.ok -or -not $r.paused) { throw "pause failed: $($r.errors)" }
           & "$env:RUNNER_TEMP\runner-rules.ps1"
           Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
           Write-Host "OK: paused - direct web access works"
@@ -278,8 +302,9 @@ jobs:
           if (-not $st.paused -or $st.firewall_active) { throw "status should report paused" }
           if ((Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -TaskName Enforce).State -ne "Disabled") { throw "Enforce task not disabled" }
           Write-Host "OK: paused state reported; Enforce task disabled"
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sys resume
-          if ($LASTEXITCODE) { throw "resume failed" }
+          $r = & $h resume | ConvertFrom-Json
+          Write-Host "resume: $($r.message)"
+          if (-not $r.ok -or $r.paused) { throw "resume failed: $($r.errors)" }
           $direct = $true
           try { Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 15 | Out-Null } catch { $direct = $false }
           if ($direct) { throw "resume did not block direct access" }

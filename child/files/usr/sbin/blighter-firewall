@@ -8,6 +8,10 @@
 #   - this laptop (loopback) - which is where Squid listens
 #   - DNS (port 53) and ping
 #   - UDP 50000-65535 when ALLOW_VOICE_UDP=yes (Discord voice/video)
+#   - the home network (HOME_NETS) when HOME_NET_ALLOWED=yes - printers, NAS
+#     drives and so on; Blighter controls internet access only
+# While /etc/blighter/paused exists (Pause in the parent app) "start" removes
+# the rules instead, so filtering stays off across restarts until Resume.
 # Everything else (direct web access, QUIC, game servers, VPNs...) is
 # rejected.  Squid itself runs as the "proxy" user, so it is unaffected.
 # Uses its own table "inet blighter" so it never touches other firewall rules.
@@ -24,15 +28,33 @@
 # -----------------------------------------------------------------------------
 set -euo pipefail
 CONF=/etc/blighter/child.conf
+PAUSED=/etc/blighter/paused
 
 start() {
     [ -r "$CONF" ] || { echo "Missing $CONF - run blighter-setup first" >&2; exit 1; }
     # shellcheck disable=SC1090
     . "$CONF"
+    if [ -e "$PAUSED" ]; then
+        stop
+        echo "Blighter filtering is PAUSED - firewall not applied"
+        return 0
+    fi
     CHILD_UID=$(id -u "$CHILD_USER")
     VOICE=""
     if [ "${ALLOW_VOICE_UDP:-yes}" = "yes" ]; then
         VOICE="udp dport 50000-65535 accept comment \"Discord voice/video\""
+    fi
+    HOME4=""; HOME6=""
+    if [ "${HOME_NET_ALLOWED:-yes}" = "yes" ]; then
+        v4=""; v6=""
+        for n in ${HOME_NETS:-}; do
+            case "$n" in
+                *:*) v6="${v6:+$v6, }$n" ;;
+                *)   v4="${v4:+$v4, }$n" ;;
+            esac
+        done
+        [ -n "$v4" ] && HOME4="ip daddr { $v4 } accept comment \"Home network\""
+        [ -n "$v6" ] && HOME6="ip6 daddr { $v6 } accept comment \"Home network\""
     fi
     nft -f - <<NFT
 table inet blighter
@@ -46,6 +68,8 @@ table inet blighter {
         udp dport 53 accept
         tcp dport 53 accept
         $VOICE
+        $HOME4
+        $HOME6
         counter reject with icmpx admin-prohibited comment "Child direct access blocked"
     }
 }

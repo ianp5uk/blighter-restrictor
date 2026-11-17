@@ -190,3 +190,60 @@ def discord_rules(allowed):
     if allowed:
         return "# Discord: allowed (Discord switch)\n" + acl + "http_access allow localhost blighter_discord\n"
     return "# Discord: blocked (Discord switch)\n" + acl + "http_access deny blighter_discord\n"
+
+
+# ---- Home network ----------------------------------------------------------------
+# Blighter controls INTERNET access only; the home network is assumed safe.
+# With the "Allow home network access" switch on, the laptop's firewall lets
+# everything through to these subnets (printers, NAS drives, ...) and Squid
+# lets web pages on them through in both modes.
+PRIVATE_NETS = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")   # RFC 1918
+
+
+def is_private_net(net):
+    """True if net (an ip_network) lies inside an RFC 1918 range (or is IPv6 ULA/link-local)."""
+    if net.version == 6:
+        return net.subnet_of(ipaddress.ip_network("fc00::/7")) or net.subnet_of(ipaddress.ip_network("fe80::/10"))
+    return any(net.subnet_of(ipaddress.ip_network(p)) for p in PRIVATE_NETS)
+
+
+def clean_subnets(items):
+    """Validate home-network subnets.
+
+    items: strings like "192.168.18.0/24" (a bare address means that one host).
+    Returns (subnets, errors, warnings): subnets normalised ("192.168.18.5/24"
+    becomes "192.168.18.0/24"), errors for unusable entries, warnings for
+    internet-routable ranges (allowed, but sites in them would bypass Squid).
+    """
+    out, errors, warnings = [], [], []
+    for raw in items:
+        s = str(raw).strip()
+        if not s or s.startswith("#"):
+            continue
+        try:
+            net = ipaddress.ip_network(s, strict=False)
+        except ValueError:
+            errors.append(f"'{s}' is not a network address such as 192.168.1.0/24")
+            continue
+        if net.prefixlen == 0:
+            errors.append(f"'{s}' would be the whole internet")
+            continue
+        if net.is_loopback:
+            errors.append(f"'{s}' is this laptop itself")
+            continue
+        text = str(net)
+        if text in out:
+            continue
+        if not is_private_net(net):
+            warnings.append(f"{text} is not a private (home) range - websites in it would bypass the filter")
+        out.append(text)
+    return out, errors, warnings
+
+
+def home_net_rules(allowed, subnets):
+    """Squid lines letting web pages on the home network through (both modes)."""
+    if not allowed or not subnets:
+        return "# Home network: not allowed through Squid\n"
+    return ("# Home network: allowed (home network switch)\n"
+            "acl blighter_home dst " + " ".join(subnets) + "\n"
+            "http_access allow localhost blighter_home\n")

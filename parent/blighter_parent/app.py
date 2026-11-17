@@ -4,10 +4,12 @@
 # Purpose: the application shell.  Left: the list of children with an
 # online/offline indicator (checked every 20 s) and Add / Edit / Remove /
 # Test buttons.  Right: three tabs for the selected child -
-#   Rules    - mode and allow/block lists, Apply to laptop
+#   Rules    - mode, allow/block lists, Allow Discord, home network, Apply
 #   Activity - the Squid access log, filters, per-site summary
-#   Laptop   - what is actually in force on the laptop, health, Reload Squid
-# A status bar shows progress and errors.
+#   Laptop   - what is actually in force on the laptop, health, Reload Squid,
+#              Pause / Resume filtering
+# A status bar shows progress and errors, and "Working…" with a moving bar
+# while the app waits for a laptop.  A paused child is shown "- PAUSED" in red.
 # Children with an open SSH session are shown in bold.
 # Log out: "Log out" button (selected child), File > Log out of all laptops,
 # automatically after 5 minutes without use, and always when the app closes.
@@ -30,7 +32,7 @@ from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMessageBox,
-                               QPlainTextEdit, QPushButton, QSplitter,
+                               QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
                                QTableView, QTabWidget, QVBoxLayout, QWidget)
 
 from . import APP_NAME, COPYRIGHT, LICENSE_NAME, __version__
@@ -40,7 +42,7 @@ from .dialogs import ChildDialog, ask_password
 from .laptop_tab import LaptopTab
 from .remote import RemoteManager, is_reachable
 from .rules_tab import RulesTab
-from .workers import run_bg
+from .workers import busy_signal, run_bg
 
 ICON_PATH = os.path.join(os.path.dirname(__file__), "icon.svg")
 IDLE_LOGOUT_SECONDS = 300
@@ -68,6 +70,7 @@ class MainWindow(QMainWindow):
         self.store = Store()
         self.remotes = RemoteManager(self.store)
         self.online = {}
+        self.paused = {}      # child id -> True/False, as last reported by the laptop
         self.icons = {True: _dot("#27ae60"), False: _dot("#95a5a6"), None: _dot("#f1c40f")}
         self.current = None
 
@@ -109,6 +112,7 @@ class MainWindow(QMainWindow):
         for t in (self.rules, self.activity, self.laptop):
             t.status.connect(self.say)
         self.activity.add_domain.connect(self._add_domain)
+        self.laptop.paused_known.connect(self._paused_known)
 
         split = QSplitter()
         split.addWidget(left)
@@ -145,6 +149,19 @@ class MainWindow(QMainWindow):
         if self.scale not in SCALES:
             self.scale = 100
         self.apply_scale()
+
+        # ---- "Working…" indicator: shown while the app waits for a laptop, so a
+        # parent can see it hasn't hung (Windows laptops take a few seconds).
+        self.busy_label = QLabel("<b>Working…</b>")
+        self.busy_bar = QProgressBar()
+        self.busy_bar.setRange(0, 0)          # moving "busy" animation
+        self.busy_bar.setMaximumWidth(140)
+        self.busy_bar.setMaximumHeight(14)
+        self.busy_bar.setTextVisible(False)
+        for w in (self.busy_label, self.busy_bar):
+            self.statusBar().addPermanentWidget(w)
+            w.hide()
+        busy_signal().connect(self._busy)
 
         self._populate()
         self.idle = QTimer(self, interval=15000)
@@ -184,7 +201,21 @@ class MainWindow(QMainWindow):
             self._set_child(None)
 
     def _label(self, c):
-        return c.label()
+        return c.label() + ("   - PAUSED" if self.paused.get(c.id) else "")
+
+    def _busy(self, n):
+        for w in (self.busy_label, self.busy_bar):
+            w.setVisible(n > 0)
+
+    def _paused_known(self, child_id, paused):
+        if self.paused.get(child_id) != paused:
+            self.paused[child_id] = paused
+            for i in range(self.list.count()):
+                it = self.list.item(i)
+                c = self._child_by_id(it.data(Qt.UserRole))
+                if c and c.id == child_id:
+                    it.setText(self._label(c))
+                    it.setForeground(QColor("#c0392b") if paused else self.list.palette().text().color())
 
     def _refresh_labels(self):
         """Logged-in children are shown in bold (tooltip says so)."""
@@ -251,7 +282,7 @@ class MainWindow(QMainWindow):
                 it.setIcon(self.icons[self.online.get(it.data(Qt.UserRole))])
             self._refresh_labels()
 
-        run_bg(job, ok)
+        run_bg(job, ok, quiet=True)
 
     def _selected(self, item, _prev=None):
         child = self._child_by_id(item.data(Qt.UserRole)) if item else None

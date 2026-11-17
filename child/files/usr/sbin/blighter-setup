@@ -101,6 +101,26 @@ fi
 # ------------------------------------------------------------- 1. config ---
 say "1/7 Recording child account: $CHILD"
 mkdir -p "$CONF_DIR"
+# Home network (printers, NAS...): kept from an earlier setup; otherwise the
+# private (RFC 1918) network the laptop is on now.  The parent app can change it.
+old_conf() { [ -r "$CONF" ] && sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$CONF" | tail -1; }
+HOME_ALLOWED=$(old_conf HOME_NET_ALLOWED || true)
+HOME_NETS=$(old_conf HOME_NETS || true)
+HOME_NAME=$(old_conf HOME_NET_NAME || true)
+if [ -z "$HOME_ALLOWED" ]; then
+    HOME_ALLOWED=yes
+    det=$(/usr/sbin/blighter-apply netinfo 2>/dev/null | python3 -c 'import json,sys
+n=[x for x in json.load(sys.stdin).get("networks", []) if x.get("private")]
+print(n[0]["subnet"] + "\t" + n[0]["name"].replace("\"", "") if n else "")' 2>/dev/null || true)
+    HOME_NETS=${det%%$'\t'*}
+    HOME_NAME=${det#*$'\t'}
+    [ -n "$HOME_NETS" ] || HOME_NAME=""
+fi
+if [ "$HOME_ALLOWED" = yes ] && [ -n "$HOME_NETS" ]; then
+    echo "Home network allowed (printers, file sharing): $HOME_NETS${HOME_NAME:+ ($HOME_NAME)}"
+elif [ "$HOME_ALLOWED" = yes ]; then
+    warn "This laptop is not on a private home network now - set the home network later in the parent app (Rules tab)."
+fi
 cat > "$CONF" <<EOF
 # Blighter Restrictor - which account on this laptop is filtered.
 CHILD_USER="$CHILD"
@@ -108,6 +128,11 @@ CHILD_USER="$CHILD"
 # UDP 50000-65535 for voice/video calls.  Changed by the parent app's
 # "Allow Discord" switch (Rules tab).
 ALLOW_VOICE_UDP="$VOICE"
+# Home network access (printers, NAS...): yes/no, the subnet(s), and the
+# network's name when recorded.  Changed in the parent app (Rules tab).
+HOME_NET_ALLOWED="$HOME_ALLOWED"
+HOME_NETS="$HOME_NETS"
+HOME_NET_NAME="$HOME_NAME"
 EOF
 chmod 644 "$CONF"
 

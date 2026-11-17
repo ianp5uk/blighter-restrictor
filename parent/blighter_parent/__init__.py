@@ -11,7 +11,7 @@
 # any later version.  It is distributed WITHOUT ANY WARRANTY; see the
 # LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 APP_NAME = "Blighter Restrictor"
 COPYRIGHT = "Copyright (C) 2026 Ways Property"
 LICENSE_NAME = "GNU General Public License v3.0 or later"

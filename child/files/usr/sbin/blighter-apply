@@ -10,7 +10,7 @@
 # Commands (output is JSON unless stated):
 #   get                 current mode, allow list, block list and config text
 #   status              Squid / firewall / proxy state of the laptop
-#   set                 read {"mode","allow","block"} JSON on stdin, validate,
+#   set                 read {"mode","allow","block"[,"discord","home_net"]} JSON on stdin, validate,
 #                       back up, write, check with "squid -k parse", reload
 #                       Squid; restore the previous files if anything fails
 #   reload              rewrite rules.conf from the saved lists and re-read
@@ -18,6 +18,9 @@
 #   log N [rotated]     plain text: last N lines of the Squid access log,
 #                       optionally including older rotated logs
 #   init                (used by blighter-setup) create default files if absent
+#   netinfo             the networks the laptop is on now (for the home network setting)
+#   pause / resume      switch filtering off (Squid allows everything, the
+#                       child firewall stands down; SSH keeps working) / back on
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -29,17 +32,19 @@
 # -----------------------------------------------------------------------------
 
 import gzip
+import ipaddress
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, "/usr/lib/blighter-child")
 import domains  # noqa: E402  (shared validation, same file as the parent app)
 import blockpage  # noqa: E402  (neutral error pages, same file as the Windows helper)
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 BASE = "/etc/squid/blighter"
 MODE_FILE = os.path.join(BASE, "mode")
 ALLOW_FILE = os.path.join(BASE, "allow.list")
@@ -50,6 +55,7 @@ ERR_DIR = os.path.join(BASE, "errors")
 STOCK_ERR_DIRS = ("/usr/share/squid/errors/templates", "/usr/share/squid/errors/en")
 SQUID_CONF = "/etc/squid/squid.conf"
 CHILD_CONF = "/etc/blighter/child.conf"
+PAUSED_FLAG = "/etc/blighter/paused"
 LOG_DIR = "/var/log/squid"
 MANAGED = (MODE_FILE, ALLOW_FILE, BLOCK_FILE, RULES_FILE)
 MAX_LOG_LINES = 100000
@@ -99,7 +105,11 @@ def write(path, text):
     os.replace(tmp, path)
 
 
-# ---- Discord switch (stored as ALLOW_VOICE_UDP in child.conf) -----------------
+# ---- Per-child switches, stored in child.conf -----------------------------------
+#   ALLOW_VOICE_UDP   yes/no   Discord allowed (Squid rules + UDP 50000-65535)
+#   HOME_NET_ALLOWED  yes/no   home network access (firewall + Squid)
+#   HOME_NETS         "192.168.18.0/24 ..."   the home network's subnet(s)
+#   HOME_NET_NAME     the network's name when it was recorded (for display)
 def conf_value(key, default=""):
     for line in read(CHILD_CONF).splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
@@ -109,24 +119,55 @@ def conf_value(key, default=""):
     return default
 
 
+def save_conf(values):
+    """Set KEY="value" lines in child.conf (adding missing keys at the end)."""
+    lines = read(CHILD_CONF).splitlines()
+    for key, value in values.items():
+        new = f'{key}="{value}"'
+        for i, line in enumerate(lines):
+            if not line.lstrip().startswith("#") and line.split("=", 1)[0].strip() == key:
+                lines[i] = new
+                break
+        else:
+            lines.append(new)
+    write(CHILD_CONF, "\n".join(lines) + "\n")
+    fix_conf_permissions()
+
+
 def discord_allowed():
     """Discord allowed?  One setting covers the Squid rules AND the firewall's
     UDP 50000-65535 opening for voice/video."""
     return conf_value("ALLOW_VOICE_UDP", "yes") != "no"
 
 
-def save_discord(allowed):
-    value = "yes" if allowed else "no"
-    lines = read(CHILD_CONF).splitlines()
-    done = False
-    for i, line in enumerate(lines):
-        if line.split("=", 1)[0].strip() == "ALLOW_VOICE_UDP":
-            lines[i] = f'ALLOW_VOICE_UDP="{value}"'
-            done = True
-    if not done:
-        lines += ["# yes = Discord allowed (Squid rules and UDP 50000-65535 for voice/video)",
-                  f'ALLOW_VOICE_UDP="{value}"']
-    write(CHILD_CONF, "\n".join(lines) + "\n")
+def home_net():
+    """The home network switch: {"allowed", "subnets", "name"}."""
+    subnets, _, _ = domains.clean_subnets(conf_value("HOME_NETS").split())
+    return {"allowed": conf_value("HOME_NET_ALLOWED", "yes") != "no",
+            "subnets": subnets, "name": conf_value("HOME_NET_NAME")}
+
+
+def parse_options(data):
+    """Read the optional "discord" and "home_net" parts of a set request.
+    Older parent apps send neither; then the laptop's settings are kept.
+    Returns (discord, home, errors, warnings)."""
+    discord = data.get("discord")
+    discord = discord_allowed() if discord is None else bool(discord)
+    home = home_net()
+    errors, warnings = [], []
+    h = data.get("home_net")
+    if isinstance(h, dict):
+        subnets, errors, warnings = domains.clean_subnets([str(x) for x in h.get("subnets", [])])
+        name = str(h.get("name", home["name"]))[:80].replace('"', "'")
+        if subnets != home["subnets"] and "name" not in h:
+            name = ""
+        home = {"allowed": bool(h.get("allowed", home["allowed"])), "subnets": subnets, "name": name}
+        if home["allowed"] and not subnets:
+            warnings.append("Home network access is on but no home network is set - nothing extra is allowed.")
+    return discord, home, [f"Home network: {e}" for e in errors], warnings
+
+
+def fix_conf_permissions():
     # Keep the permissions blighter-setup gave it (write() uses Squid's 0640 root:proxy).
     os.chmod(CHILD_CONF, 0o644)
     try:
@@ -135,8 +176,21 @@ def save_discord(allowed):
         pass
 
 
-def apply_discord_firewall():
-    """Re-create the nftables rules so UDP 50000-65535 (Discord voice) matches child.conf."""
+def is_paused():
+    return os.path.exists(PAUSED_FLAG)
+
+
+def paused_rules():
+    # While paused Squid lets everything through (the desktop proxy stays
+    # locked to Squid, so this is what gives open access); the firewall
+    # script also stands down while the flag file exists.
+    if is_paused():
+        return "# PAUSED (Pause in the parent app): everything allowed\nhttp_access allow localhost\n"
+    return ""
+
+
+def apply_firewall_options():
+    """Re-create the nftables rules (Discord voice, home network, paused) from child.conf."""
     if have_systemd():
         return run(["systemctl", "reload-or-restart", "blighter-firewall.service"])
     return run(["/usr/sbin/blighter-firewall", "start"])
@@ -147,13 +201,17 @@ def read_mode():
     return m if m in domains.MODES else domains.MODE_BLOCKLIST
 
 
-def render_rules(mode, allow_lines, block_lines, discord=None):
+def render_rules(mode, allow_lines, block_lines, discord=None, home=None):
     # The neutral error pages must exist before Squid reads this file.
     blockpage.write_pages(ERR_DIR, STOCK_ERR_DIRS)
     head = ("# Generated by Blighter Restrictor - do not edit by hand.\n"
             f"# Mode: {mode}\n" + blockpage.squid_lines(ERR_DIR))
     if discord is None:
         discord = discord_allowed()
+    if home is None:
+        home = home_net()
+    head += paused_rules()
+    head += domains.home_net_rules(home["allowed"], home["subnets"])
     head += domains.discord_rules(discord)
     if mode == domains.MODE_ALLOWLIST:
         if domains.entries_only(allow_lines):
@@ -172,7 +230,10 @@ def have_systemd():
 
 
 def run(cmd):
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError as e:      # e.g. nmcli on a laptop without NetworkManager
+        return 127, str(e)
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
@@ -215,6 +276,8 @@ def cmd_get():
         "rules_conf": read(RULES_FILE),
         "squid_conf": read(SQUID_CONF),
         "discord": discord_allowed(),
+        "home_net": home_net(),
+        "paused": is_paused(),
     })
 
 
@@ -241,9 +304,12 @@ def cmd_status():
         "squid_version": ver.splitlines()[0] if ver else "?",
         "squid_running": squid_running(),
         "squid_conf_managed": "Blighter Restrictor" in read(SQUID_CONF)[:400],
-        "firewall_active": code == 0,
-        "firewall_rules": fw if code == 0 else "Firewall table not loaded",
+        "firewall_active": code == 0 and not is_paused(),
+        "firewall_rules": ("Filtering is PAUSED - the child has open internet access.\n\n" if is_paused() else "")
+                          + (fw if code == 0 else "Firewall table not loaded"),
         "proxy_locked": os.path.exists("/etc/dconf/db/local.d/locks/00-blighter-proxy"),
+        "paused": is_paused(),
+        "home_net": home_net(),
     })
 
 
@@ -270,15 +336,16 @@ def cmd_set():
         elif os.path.exists(dst):
             os.remove(dst)
 
-    # "discord" is optional (older parent apps do not send it).
-    discord = data.get("discord")
-    discord = discord_allowed() if discord is None else bool(discord)
+    discord, home, opt_errors, opt_warnings = parse_options(data)
+    if opt_errors:
+        out({"ok": False, "message": "Settings contain errors - nothing changed.", "errors": opt_errors}, 1)
     discord_changed = discord != discord_allowed()
+    home_changed = home != home_net()
 
     write(ALLOW_FILE, "\n".join(allow) + "\n")
     write(BLOCK_FILE, "\n".join(block) + "\n")
     write(MODE_FILE, mode + "\n")
-    write(RULES_FILE, render_rules(mode, allow, block, discord))
+    write(RULES_FILE, render_rules(mode, allow, block, discord, home))
 
     code, msg = squid_parse()
     ok = code == 0
@@ -296,17 +363,91 @@ def cmd_set():
              "errors": [parse_errors(msg + "\n" + reload_msg)]}, 1)
 
     message = "Applied and Squid reloaded."
-    if discord_changed:
-        # Squid accepted the rules; now the setting and the firewall follow.
-        save_discord(discord)
-        fw_code, fw_msg = apply_discord_firewall()
-        message += " Discord " + ("allowed." if discord else "blocked.")
+    if discord_changed or home_changed:
+        # Squid accepted the rules; now the settings and the firewall follow.
+        save_conf({"ALLOW_VOICE_UDP": "yes" if discord else "no",
+                   "HOME_NET_ALLOWED": "yes" if home["allowed"] else "no",
+                   "HOME_NETS": " ".join(home["subnets"]),
+                   "HOME_NET_NAME": home["name"]})
+        fw_code, fw_msg = apply_firewall_options()
+        if discord_changed:
+            message += " Discord " + ("allowed." if discord else "blocked.")
+        if home_changed:
+            message += " Home network access " + ("on." if home["allowed"] else "off.")
         if fw_code != 0:
-            message += " WARNING: the firewall could not be updated for Discord voice: " + fw_msg[-300:]
-    warn = [l for l in msg.splitlines() if "WARNING" in l]
-    out({"ok": True, "message": message, "discord": discord_allowed(),
+            message += " WARNING: the laptop's firewall could not be updated: " + fw_msg[-300:]
+    warn = [l for l in msg.splitlines() if "WARNING" in l] + opt_warnings
+    out({"ok": True, "message": message, "discord": discord_allowed(), "home_net": home_net(),
+         "paused": is_paused(),
          "notes": n1 + n2, "warnings": warn[-10:],
          "allow": allow, "block": block, "mode": mode})
+
+
+def networks_from(entries):
+    """entries: [(address, prefixlen, name)] -> [{"subnet", "name", "private", "address"}]."""
+    nets, seen = [], set()
+    for addr, plen, name in entries:
+        try:
+            iface = ipaddress.ip_interface(f"{addr}/{plen}")
+        except ValueError:
+            continue
+        net = iface.network
+        if net.is_loopback or net.is_link_local or str(net) in seen:
+            continue
+        seen.add(str(net))
+        nets.append({"subnet": str(net), "name": name or "", "address": str(iface.ip),
+                     "private": domains.is_private_net(net)})
+    return nets
+
+
+def current_networks():
+    """The networks this laptop is on now (via its default routes), with names."""
+    code, text = run(["ip", "-j", "route", "show", "default"])
+    devs = []
+    try:
+        for r in json.loads(text) if code == 0 else []:
+            if r.get("dev") and r["dev"] not in devs:
+                devs.append(r["dev"])
+    except ValueError:
+        pass
+    names = {}
+    code, text = run(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"])
+    if code == 0:
+        for line in text.splitlines():
+            name, _, dev = line.rpartition(":")
+            if dev:
+                names[dev] = name.replace("\\:", ":")
+    entries = []
+    for dev in devs:
+        code, text = run(["ip", "-j", "-4", "addr", "show", "dev", dev])
+        try:
+            for link in json.loads(text) if code == 0 else []:
+                for a in link.get("addr_info", []):
+                    entries.append((a.get("local"), a.get("prefixlen"), names.get(dev, dev)))
+        except ValueError:
+            pass
+    return networks_from(entries)
+
+
+def cmd_netinfo():
+    out({"networks": current_networks()})
+
+
+def cmd_pause(on):
+    """Pause (on=True) or resume filtering.  While paused Squid allows
+    everything and the firewall stands down; SSH keeps working."""
+    if on:
+        write(PAUSED_FLAG, time.strftime("%Y-%m-%d %H:%M:%S") + "\n")
+    elif os.path.exists(PAUSED_FLAG):
+        os.remove(PAUSED_FLAG)
+    write(RULES_FILE, render_rules(read_mode(), read(ALLOW_FILE).splitlines(), read(BLOCK_FILE).splitlines()))
+    code, msg = squid_parse()
+    ok, rmsg = (squid_reload() if code == 0 else (False, msg))
+    fw_code, fw_msg = apply_firewall_options()
+    problems = ([] if ok else ["Squid: " + parse_errors(rmsg)]) + ([] if fw_code == 0 else ["Firewall: " + fw_msg[-300:]])
+    out({"ok": not problems, "paused": is_paused(),
+         "message": ("Filtering PAUSED - the child has open internet access." if on else "Filtering RESUMED."),
+         "errors": problems}, 0 if not problems else 1)
 
 
 def cmd_reload():
@@ -373,7 +514,7 @@ def main():
         sys.exit("blighter-apply must be run as root (via sudo)")
     args = sys.argv[1:]
     if not args:
-        sys.exit(__doc__ or "usage: blighter-apply get|status|set|reload|log N [rotated]|init")
+        sys.exit(__doc__ or "usage: blighter-apply get|status|set|reload|log N [rotated]|init|netinfo|pause|resume")
     cmd, rest = args[0], args[1:]
     if cmd == "get" and not rest:
         cmd_get()
@@ -387,8 +528,12 @@ def main():
         cmd_log(rest)
     elif cmd == "init" and not rest:
         cmd_init()
+    elif cmd == "netinfo" and not rest:
+        cmd_netinfo()
+    elif cmd in ("pause", "resume") and not rest:
+        cmd_pause(cmd == "pause")
     else:
-        sys.exit("usage: blighter-apply get|status|set|reload|log N [rotated]|init")
+        sys.exit("usage: blighter-apply get|status|set|reload|log N [rotated]|init|netinfo|pause|resume")
 
 
 if __name__ == "__main__":

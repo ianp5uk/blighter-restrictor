@@ -64,7 +64,7 @@ $ErrorActionPreference = "Stop"
 # Progress bars are hidden (they flash on and off and look like a fault);
 # slow steps print their own "still working" lines instead.
 $ProgressPreference    = "SilentlyContinue"
-$Version   = "1.2.2"
+$Version   = "1.2.3"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -404,6 +404,28 @@ if ((Test-Path $oldConf) -and (Select-String -Path $oldConf -Pattern '^\s*ALLOW_
 if ($NoVoice) { $voice = "no" }
 elseif (Ask "Allow Discord (text chat, voice and video calls)?  The parent app can change this later." $voiceDefault) { $voice = "yes" }
 else { $voice = "no" }
+# Home network (printers, NAS...): kept from an earlier setup; otherwise the
+# private (RFC 1918) network the laptop is on now.  The parent app can change it.
+function Get-OldConf([string]$key) {
+    if (-not (Test-Path $oldConf)) { return $null }
+    $m = Select-String -Path $oldConf -Pattern ('^\s*' + $key + '\s*=\s*"?([^"]*)"?\s*$') | Select-Object -Last 1
+    if ($m) { return $m.Matches[0].Groups[1].Value } else { return $null }
+}
+$homeAllowed = Get-OldConf "HOME_NET_ALLOWED"
+$homeNets = Get-OldConf "HOME_NETS"
+$homeName = Get-OldConf "HOME_NET_NAME"
+if (-not $homeAllowed) {
+    $homeAllowed = "yes"; $homeNets = ""; $homeName = ""
+    try {
+        $ErrorActionPreference = "Continue"
+        $ni = (& (Join-Path $Dest "python\python.exe") -I (Join-Path $Dest "blighter-apply.py") netinfo) -join "" | ConvertFrom-Json
+        $ErrorActionPreference = "Stop"
+        $first = @($ni.networks | Where-Object { $_.private }) | Select-Object -First 1
+        if ($first) { $homeNets = $first.subnet; $homeName = ("$($first.name)" -replace '"', "'") }
+    } catch { $ErrorActionPreference = "Stop" }
+}
+if ($homeAllowed -eq "yes" -and $homeNets) { Write-Host "Home network allowed (printers, file sharing): $homeNets$(if ($homeName) { " ($homeName)" })" }
+elseif ($homeAllowed -eq "yes") { Warn "This laptop is not on a private home network now - set the home network later in the parent app (Rules tab)." }
 @"
 # Blighter Restrictor - which account on this laptop is the child's.
 # Written by blighter-setup.ps1 $Version.  On Windows the firewall filters the
@@ -414,6 +436,11 @@ CHILD_SID="$childSid"
 # UDP 50000-65535 for voice/video calls.  Changed by the parent app's
 # "Allow Discord" switch (Rules tab).
 ALLOW_VOICE_UDP="$voice"
+# Home network access (printers, NAS...): yes/no, the subnet(s), and the
+# network's name when recorded.  Changed in the parent app (Rules tab).
+HOME_NET_ALLOWED="$homeAllowed"
+HOME_NETS="$homeNets"
+HOME_NET_NAME="$homeName"
 "@ | Set-Content -Path (Join-Path $Dest "child.conf") -Encoding ASCII
 & (Join-Path $Dest "python\python.exe") -I -c "print('Bundled Python OK')"
 if ($LASTEXITCODE -ne 0) { Die "The bundled Python does not run on this laptop." }
