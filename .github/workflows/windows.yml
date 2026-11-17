@@ -211,7 +211,7 @@ jobs:
           Write-Host "set discord=false: $($r.message)"
           if (-not $r.ok -or $r.discord) { throw "Discord switch off failed" }
           if (Get-NetFirewallRule -Name BR-Voice -ErrorAction SilentlyContinue) { throw "BR-Voice still present with Discord blocked" }
-          $d = (& curl.exe -s -o NUL -w "%{http_code}" -x http://127.0.0.1:3128 https://discord.com/)
+          $d = (& curl.exe -s -o NUL -w "%{http_code}" -x http://127.0.0.1:3128 http://discord.com/)
           Write-Host "discord.com with Discord blocked -> $d"
           if ($d -ne "403") { throw "Discord not blocked (got $d)" }
           if (((& $h get) | ConvertFrom-Json).discord) { throw "get still reports Discord allowed" }
@@ -219,7 +219,7 @@ jobs:
           Write-Host "set discord=true: $($r.message)"
           if (-not $r.ok -or -not $r.discord) { throw "Discord switch on failed" }
           if (-not (Get-NetFirewallRule -Name BR-Voice -ErrorAction SilentlyContinue)) { throw "BR-Voice missing with Discord allowed" }
-          $d = (& curl.exe -s -o NUL -w "%{http_code}" -x http://127.0.0.1:3128 https://discord.com/)
+          $d = (& curl.exe -s -o NUL -w "%{http_code}" -x http://127.0.0.1:3128 http://discord.com/)
           Write-Host "discord.com with Discord allowed -> $d"
           if ($d -eq "403" -or $d -eq "000") { throw "Discord still blocked (got $d)" }
           Write-Host "OK: Discord switch blocks and allows"
