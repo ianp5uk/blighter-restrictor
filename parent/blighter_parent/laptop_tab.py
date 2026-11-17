@@ -53,7 +53,7 @@ class LaptopTab(QWidget):
                            ("child_is_admin", "Child is administrator"), ("mode", "Mode in force"),
                            ("squid_running", "Squid running"), ("squid_version", "Squid version"),
                            ("squid_conf_managed", "squid.conf managed"),
-                           ("firewall_active", "Firewall active"), ("voice_udp", "Discord voice allowed"),
+                           ("firewall_active", "Firewall active"), ("voice_udp", "Discord allowed"),
                            ("proxy_locked", "Desktop proxy locked"), ("helper_version", "Helper version")):
             self.fields[key] = QLabel("-")
             form.addRow(label + ":", self.fields[key])

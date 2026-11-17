@@ -17,6 +17,10 @@
 #   example.com:443 -> example.com
 # Entries already covered by a wider ".domain" entry are removed, because Squid
 # warns about (and may reject) overlapping entries in one ACL.
+# Discord is NOT controlled by the lists but by its own per-child switch
+# ("Allow Discord"): DISCORD_DOMAINS, is_discord() and discord_rules() below
+# are used by the parent app (to warn about Discord lines in a list) and by
+# both child helpers (to write the Squid rules).
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -165,3 +169,24 @@ def suggest_parent_domain(host):
     if len(parts[-1]) == 2 and len(parts[-2]) <= 3:
         return ".".join(parts[-3:])
     return ".".join(parts[-2:])
+
+
+# ---- Discord switch -------------------------------------------------------------
+# Discord's own domains (text chat, voice/video signalling, images, invites).
+DISCORD_DOMAINS = (".discord.com", ".discord.gg", ".discordapp.com", ".discordapp.net",
+                   ".discord.media", ".discord.co", ".dis.gd", ".discordstatus.com")
+
+
+def is_discord(entry):
+    """True if a list entry is one of Discord's domains (or inside one)."""
+    e = entry.strip().lower().lstrip(".")
+    return any(e == d[1:] or e.endswith(d) for d in DISCORD_DOMAINS)
+
+
+def discord_rules(allowed):
+    """Squid lines for the Discord switch.  They come BEFORE the mode rules,
+    so the switch wins over both lists in both modes."""
+    acl = "acl blighter_discord dstdomain " + " ".join(DISCORD_DOMAINS) + "\n"
+    if allowed:
+        return "# Discord: allowed (Discord switch)\n" + acl + "http_access allow localhost blighter_discord\n"
+    return "# Discord: blocked (Discord switch)\n" + acl + "http_access deny blighter_discord\n"

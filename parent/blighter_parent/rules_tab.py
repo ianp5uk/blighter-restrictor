@@ -8,6 +8,10 @@
 #   Mode "Allow all, block some"  -> only the Block list is used
 #   Mode "Block all, allow some"  -> only the Allow list is used
 # Both lists are always kept, so switching mode never loses either one.
+# "Allow Discord" is a separate per-child switch (Discord's web addresses and,
+# for voice/video calls, UDP 50000-65535 in the laptop's firewall).  It wins
+# over both lists, and is applied with them by "Apply to laptop".  Discord
+# lines typed into a list are pointed out, as they have no effect.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -20,7 +24,7 @@
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase
-from PySide6.QtWidgets import (QButtonGroup, QGroupBox, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QGroupBox, QHBoxLayout, QLabel,
                                QListWidget, QMessageBox, QPlainTextEdit,
                                QPushButton, QRadioButton, QSplitter, QVBoxLayout,
                                QWidget)
@@ -40,7 +44,8 @@ class RulesTab(QWidget):
         super().__init__(parent)
         self.remotes = remotes
         self.child = None
-        self.loaded = None  # (mode, allow_text, block_text) as last read from the laptop
+        self.loaded = None  # (mode, allow_text, block_text, discord) as last read from the laptop
+        self.discord_supported = False
         self.busy = False
 
         self.rb_block = QRadioButton("Allow all, block some")
@@ -53,6 +58,12 @@ class RulesTab(QWidget):
         mode_row.addWidget(QLabel("<b>Mode:</b>"))
         mode_row.addWidget(self.rb_block)
         mode_row.addWidget(self.rb_allow)
+        mode_row.addSpacing(24)
+        self.cb_discord = QCheckBox("Allow Discord (text, voice and video calls)")
+        self.cb_discord.setToolTip("Discord is controlled here, not by the lists.  Takes effect when you "
+                                   "press 'Apply to laptop'.")
+        self.cb_discord.toggled.connect(lambda *_: self._changed())
+        mode_row.addWidget(self.cb_discord)
         mode_row.addStretch()
         self.dirty_label = QLabel("")
         mode_row.addWidget(self.dirty_label)
@@ -119,7 +130,8 @@ class RulesTab(QWidget):
         return domains.MODE_ALLOWLIST if self.rb_allow.isChecked() else domains.MODE_BLOCKLIST
 
     def _current(self):
-        return (self.mode(), self.allow_edit.toPlainText().strip(), self.block_edit.toPlainText().strip())
+        return (self.mode(), self.allow_edit.toPlainText().strip(), self.block_edit.toPlainText().strip(),
+                self.cb_discord.isChecked())
 
     def is_dirty(self):
         return self.loaded is not None and self._current() != self.loaded
@@ -128,6 +140,7 @@ class RulesTab(QWidget):
         for w in (self.rb_block, self.rb_allow, self.block_edit, self.allow_edit,
                   self.btn_reload, self.btn_tidy, self.btn_revert, self.btn_apply):
             w.setEnabled(on)
+        self.cb_discord.setEnabled(on and self.discord_supported)
 
     def _changed(self):
         allow_mode = self.rb_allow.isChecked()
@@ -147,12 +160,17 @@ class RulesTab(QWidget):
             for e in errs:
                 errors.append(e)
                 self.issues.addItem(f"ERROR {name} list - {e}")
+            if self.discord_supported:
+                for line in domains.entries_only(domains.clean_list(edit.toPlainText().splitlines())[0]):
+                    if domains.is_discord(line):
+                        self.issues.addItem(f"Note: {name} list - '{line}' is Discord, which the 'Allow Discord' "
+                                            "switch controls; this line has no effect.")
         if self.mode() == domains.MODE_ALLOWLIST and not domains.entries_only(
                 domains.clean_list(self.allow_edit.toPlainText().splitlines())[0]):
             self.issues.addItem("Note: the allow list is empty - every site will be blocked.")
         return not errors
 
-    def _fill(self, mode, allow_lines, block_lines):
+    def _fill(self, mode, allow_lines, block_lines, discord=None):
         for e in (self.block_edit, self.allow_edit):
             e.blockSignals(True)
         self.allow_edit.setPlainText("\n".join(allow_lines).strip())
@@ -160,6 +178,13 @@ class RulesTab(QWidget):
         for e in (self.block_edit, self.allow_edit):
             e.blockSignals(False)
         (self.rb_allow if mode == domains.MODE_ALLOWLIST else self.rb_block).setChecked(True)
+        self.discord_supported = discord is not None
+        self.cb_discord.blockSignals(True)
+        self.cb_discord.setChecked(bool(discord) if discord is not None else True)
+        self.cb_discord.blockSignals(False)
+        if not self.discord_supported:
+            self.cb_discord.setToolTip("This laptop's Blighter child version has no Discord switch - "
+                                       "update it to 1.2.2 or later.")
         self.loaded = self._current()
         self._changed()
 
@@ -184,7 +209,7 @@ class RulesTab(QWidget):
             self.busy = False
             if child is not self.child:
                 return
-            self._fill(data.get("mode"), data.get("allow", []), data.get("block", []))
+            self._fill(data.get("mode"), data.get("allow", []), data.get("block", []), data.get("discord"))
             self._set_enabled(True)
             self.status.emit(f"Rules loaded from {child.name}'s laptop.")
 
@@ -207,8 +232,9 @@ class RulesTab(QWidget):
 
     def revert(self):
         if self.loaded:
-            mode, allow, block = self.loaded
-            self._fill(mode, allow.splitlines(), block.splitlines())
+            mode, allow, block, discord = self.loaded
+            self._fill(mode, allow.splitlines(), block.splitlines(),
+                       discord if self.discord_supported else None)
 
     def add_domain(self, which, domain):
         """Called from the Activity tab: which is 'allow' or 'block'."""
@@ -231,6 +257,7 @@ class RulesTab(QWidget):
         allow = self.allow_edit.toPlainText().splitlines()
         block = self.block_edit.toPlainText().splitlines()
         mode = self.mode()
+        discord = self.cb_discord.isChecked() if self.discord_supported else None
         self.busy = True
         self._set_enabled(False)
         self.status.emit(f"Applying rules to {child.name}'s laptop…")
@@ -240,7 +267,8 @@ class RulesTab(QWidget):
             self._set_enabled(True)
             if res.get("ok"):
                 if child is self.child:
-                    self._fill(res.get("mode"), res.get("allow", []), res.get("block", []))
+                    self._fill(res.get("mode"), res.get("allow", []), res.get("block", []),
+                               res.get("discord", discord))
                     for w in res.get("warnings", []):
                         self.issues.addItem("Squid: " + w)
                 self.status.emit(f"{child.name}: {res.get('message')}")
@@ -255,4 +283,4 @@ class RulesTab(QWidget):
             QMessageBox.critical(self, "Could not apply", msg)
             self.status.emit(msg)
 
-        run_bg(lambda: self.remotes.get(child).apply(mode, allow, block), ok, err)
+        run_bg(lambda: self.remotes.get(child).apply(mode, allow, block, discord), ok, err)

@@ -13,7 +13,7 @@
 #   6. sets and locks the desktop proxy to 127.0.0.1:3128
 #   7. adds a proxy-aware Discord launcher if Discord (.deb or snap) is installed
 #
-# Usage:  sudo blighter-setup <child-username> [--no-voice]
+# Usage:  sudo blighter-setup <child-username> [--no-discord]   (--no-voice also works)
 #         sudo blighter-setup --remove [--yes]      undo everything
 #
 # Copyright (C) 2026 Ways Property
@@ -85,9 +85,12 @@ if [ "${1:-}" = "--remove" ]; then
 fi
 
 CHILD=${1:-}
+# Discord switch: kept from an earlier setup unless --no-discord is given;
+# the parent app can change it later (Rules tab, "Allow Discord").
 VOICE=yes
-[ "${2:-}" = "--no-voice" ] && VOICE=no
-[ -n "$CHILD" ] || die "Usage: sudo blighter-setup <child-username> [--no-voice]"
+if [ -r "$CONF" ] && grep -qE '^\s*ALLOW_VOICE_UDP\s*=\s*"?no' "$CONF"; then VOICE=no; fi
+case "${2:-}" in --no-voice|--no-discord) VOICE=no ;; esac
+[ -n "$CHILD" ] || die "Usage: sudo blighter-setup <child-username> [--no-discord]"
 id "$CHILD" >/dev/null 2>&1 || die "User '$CHILD' does not exist on this laptop"
 [ "$CHILD" != "$ADMIN" ] && [ "$CHILD" != root ] || die "'$CHILD' cannot be the child account"
 if id -nG "$CHILD" | tr ' ' '\n' | grep -qxE 'sudo|admin|wheel'; then
@@ -101,7 +104,9 @@ mkdir -p "$CONF_DIR"
 cat > "$CONF" <<EOF
 # Blighter Restrictor - which account on this laptop is filtered.
 CHILD_USER="$CHILD"
-# yes = allow outgoing UDP 50000-65535 (Discord voice/video calls)
+# yes = Discord allowed: its web addresses through Squid and outgoing
+# UDP 50000-65535 for voice/video calls.  Changed by the parent app's
+# "Allow Discord" switch (Rules tab).
 ALLOW_VOICE_UDP="$VOICE"
 EOF
 chmod 644 "$CONF"

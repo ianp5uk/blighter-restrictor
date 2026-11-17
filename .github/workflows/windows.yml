@@ -155,6 +155,7 @@ jobs:
           & "$env:RUNNER_TEMP\compare.ps1"
           Write-Host "OK: interrupted setup undone"
           & "$env:RUNNER_TEMP\runner-rules.ps1"
+          $global:LASTEXITCODE = 0
       - name: Install the child component
         shell: pwsh
         run: |
@@ -204,6 +205,25 @@ jobs:
           if ($page -notmatch "This site isn't available") { throw "neutral block page not shown" }
           if ($page -match "(?i)squid|X-Cache|Via:") { throw "block page or headers still mention Squid" }
           Write-Host "OK: neutral block page, no Squid headers"
+          # Discord switch: blocked -> Discord refused by Squid and no voice rule;
+          # allowed again -> voice rule back.
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"discord":false}' | & $h set | ConvertFrom-Json
+          Write-Host "set discord=false: $($r.message)"
+          if (-not $r.ok -or $r.discord) { throw "Discord switch off failed" }
+          if (Get-NetFirewallRule -Name BR-Voice -ErrorAction SilentlyContinue) { throw "BR-Voice still present with Discord blocked" }
+          $d = (& curl.exe -s -o NUL -w "%{http_code}" -x http://127.0.0.1:3128 https://discord.com/)
+          Write-Host "discord.com with Discord blocked -> $d"
+          if ($d -ne "403") { throw "Discord not blocked (got $d)" }
+          if (((& $h get) | ConvertFrom-Json).discord) { throw "get still reports Discord allowed" }
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"discord":true}' | & $h set | ConvertFrom-Json
+          Write-Host "set discord=true: $($r.message)"
+          if (-not $r.ok -or -not $r.discord) { throw "Discord switch on failed" }
+          if (-not (Get-NetFirewallRule -Name BR-Voice -ErrorAction SilentlyContinue)) { throw "BR-Voice missing with Discord allowed" }
+          $d = (& curl.exe -s -o NUL -w "%{http_code}" -x http://127.0.0.1:3128 https://discord.com/)
+          Write-Host "discord.com with Discord allowed -> $d"
+          if ($d -eq "403" -or $d -eq "000") { throw "Discord still blocked (got $d)" }
+          Write-Host "OK: Discord switch blocks and allows"
+          $global:LASTEXITCODE = 0
           if (@(Get-ChildItem C:\Squid\etc\squid\blighter\errors -Filter ERR_*).Count -lt 40) { throw "error pages missing" }
           Get-ChildItem C:\Squid\usr\share\squid\errors -Directory -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object { Write-Host "stock errors folder: $($_.Name)" }
       - name: Parent app SSH code against Windows OpenSSH

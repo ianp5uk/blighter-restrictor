@@ -36,6 +36,7 @@
 #
 # Usage (PowerShell as administrator):
 #   blighter-setup.ps1 [-Child <username>] [-NoVoice] [-DnsServers "1.1.1.1 8.8.8.8"]
+#   (-NoVoice = block Discord without asking; otherwise setup asks)
 #   blighter-setup.ps1 -Remove [-Yes]        undo everything
 # -Yes answers every question with its default (for automated tests); the
 # blighter password is then taken from the BLIGHTER_ADMIN_PASSWORD
@@ -395,14 +396,23 @@ if ((Resolve-Path $Src).Path.TrimEnd('\') -ne (Resolve-Path $Dest).Path.TrimEnd(
 }
 Get-ChildItem $Dest -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
 Lock-Folder $Dest
-$voice = if ($NoVoice) { "no" } else { "yes" }
+# Discord: one switch for its web addresses (Squid) and voice/video (firewall).
+# The parent app can change it later; a re-run keeps the earlier choice as the default.
+$oldConf = Join-Path $Dest "child.conf"
+$voiceDefault = "y"
+if ((Test-Path $oldConf) -and (Select-String -Path $oldConf -Pattern '^\s*ALLOW_VOICE_UDP\s*=\s*"?no' -Quiet)) { $voiceDefault = "n" }
+if ($NoVoice) { $voice = "no" }
+elseif (Ask "Allow Discord (text chat, voice and video calls)?  The parent app can change this later." $voiceDefault) { $voice = "yes" }
+else { $voice = "no" }
 @"
 # Blighter Restrictor - which account on this laptop is the child's.
 # Written by blighter-setup.ps1 $Version.  On Windows the firewall filters the
 # whole laptop; CHILD_USER is used for the proxy setting and admin warnings.
 CHILD_USER="$Child"
 CHILD_SID="$childSid"
-# yes = allow outgoing UDP 50000-65535 (Discord voice/video calls)
+# yes = Discord allowed: its web addresses through Squid and outgoing
+# UDP 50000-65535 for voice/video calls.  Changed by the parent app's
+# "Allow Discord" switch (Rules tab).
 ALLOW_VOICE_UDP="$voice"
 "@ | Set-Content -Path (Join-Path $Dest "child.conf") -Encoding ASCII
 & (Join-Path $Dest "python\python.exe") -I -c "print('Bundled Python OK')"

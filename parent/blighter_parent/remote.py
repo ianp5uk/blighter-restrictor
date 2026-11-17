@@ -188,8 +188,11 @@ class Remote:
     def status(self):
         return self._json(["status"])
 
-    def apply(self, mode, allow, block):
-        return self._json(["set"], json.dumps({"mode": mode, "allow": allow, "block": block}))
+    def apply(self, mode, allow, block, discord=None):
+        data = {"mode": mode, "allow": allow, "block": block}
+        if discord is not None:          # older laptops (before 1.2.2) have no Discord switch
+            data["discord"] = bool(discord)
+        return self._json(["set"], json.dumps(data))
 
     def reload(self):
         return self._json(["reload"])

@@ -33,10 +33,13 @@
 #             keeps working so the parent app can still connect.
 #   resume    switch filtering back on after "pause"
 #   disable   undo everything this script did (used by blighter-setup.ps1 -Remove)
+#   voice     add or remove the Discord voice rule (UDP 50000-65535) to match
+#             ALLOW_VOICE_UDP in child.conf (run by blighter-apply.py when the
+#             parent app's "Allow Discord" switch changes; nothing while paused)
 #   status    print a JSON summary (used by blighter-apply.py "status")
 #
 # Usage (as administrator):
-#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|pause|resume|disable|status
+#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|pause|resume|disable|voice|status
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -46,7 +49,7 @@
 # any later version.  It is distributed WITHOUT ANY WARRANTY; see the
 # LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
-param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "status")][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "voice", "status")][string]$Action)
 
 $ErrorActionPreference = "Stop"
 # No progress bars: each firewall cmdlet would otherwise flash one, which is
@@ -565,6 +568,16 @@ switch ($Action) {
             if ($conf.CHILD_SID -and (Test-Path "Registry::HKEY_USERS\$($conf.CHILD_SID)")) { Set-ChildProxy $conf.CHILD_SID $true | Out-Null }
         } catch { Write-BLog "ERROR (proxy): $($_.Exception.Message)" }
         try { Confirm-Services } catch { Write-BLog "ERROR (services): $($_.Exception.Message)" }
+    }
+    "voice" {
+        if (Test-Path $PausedFlag) { Write-BLog "Discord setting saved; it takes effect when filtering is resumed."; return }
+        if ($voice) {
+            Set-BlighterRule (Get-WantedRules $true | Where-Object { $_.Name -eq "BR-Voice" }) "Outbound" $true
+            Write-BLog "Discord voice/video rule (UDP 50000-65535) switched on."
+        } else {
+            Remove-NetFirewallRule -Name "BR-Voice" -ErrorAction SilentlyContinue
+            Write-BLog "Discord voice/video rule (UDP 50000-65535) removed."
+        }
     }
     "disable" {
         $pre = Read-PreState
