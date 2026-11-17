@@ -236,7 +236,10 @@ jobs:
           class C: ip='127.0.0.1'; port=22; admin_user='blighter'; name='CI'; child_user='testkid'
           r = Remote(C(), sys.argv[1], tempfile.mktemp())
           import time
+          t = time.monotonic(); r._connect(); print('first SSH login: %.1f s' % (time.monotonic() - t))
           t = time.monotonic(); cfg = r.get(); print('get over SSH: %.1f s' % (time.monotonic() - t))
+          r2 = Remote(C(), sys.argv[1], tempfile.mktemp())
+          t = time.monotonic(); r2._connect(); print('second SSH login: %.1f s' % (time.monotonic() - t)); r2.close()
           t = time.monotonic(); st = r.status(); print('status over SSH: %.1f s' % (time.monotonic() - t))
           print('windows detected:', r.windows, '| squid running:', st['squid_running'], '| firewall:', st['firewall_active'])
           assert r.windows and st['platform'] == 'windows' and st['firewall_active']

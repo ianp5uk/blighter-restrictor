@@ -601,7 +601,9 @@ $SetupDone = $true
         Write-Host "Setup did NOT finish." -ForegroundColor Red
         if (Test-Path $PreFile) {
             $undo = $true
-            try { $undo = Ask "Undo the changes made so far (recommended)?" "y" } catch { $undo = $true }
+            Write-Host "Undoing removes Blighter Restrictor completely and puts the laptop back as it was"
+            Write-Host "before Blighter was first installed (as 'Remove Blighter Child.cmd' does)."
+            try { $undo = Ask "Undo now (recommended)?" "y" } catch { $undo = $true }
             if ($undo) {
                 Write-Host "Undoing - this can take a few minutes; please wait for 'Done'..."
                 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "blighter-setup.ps1") -Remove -Yes

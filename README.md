@@ -5,7 +5,7 @@ component (Ubuntu or Windows laptops), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.2.1
+# Blighter Restrictor 1.2.2
 
 Monitor and restrict your children's web access on their Ubuntu 26.04 or
 Windows 10/11 laptops.
@@ -39,6 +39,18 @@ read the activity log.
 * On **Windows** laptops the firewall covers the **whole laptop** (every
   account, including yours), because Windows can't reliably filter outgoing
   traffic per account. See section 1b.
+* **Blocked sites show a plain "This site isn't available" page** on plain
+  http sites. It doesn't mention Squid, a proxy, filtering or parents, and
+  Squid's own headers (`Server`, `Via`, `X-Cache`, `X-Squid-Error`) are
+  removed. Secure (https) sites show the browser's own error instead (for
+  example "The proxy server is refusing connections"); nothing on the laptop
+  can change that.
+* **Discord** has its own per-child switch, *Allow Discord* (Rules tab). It
+  covers Discord's web addresses and, for voice and video calls, outgoing
+  UDP 50000-65535. It wins over both lists. Note: while Discord is allowed,
+  that UDP range is open to **any** program, so a child who is an
+  administrator could run a VPN on a port in that range. For tight control,
+  make the child a standard user, or switch Discord off.
 
 ## 1. Set up each child's laptop
 
@@ -46,7 +58,7 @@ Do this as an administrator on the child's laptop. The child's own account
 must **not** be an administrator.
 
 ```bash
-sudo apt install ./blighter-child_1.2.1_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.2.2_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
@@ -66,7 +78,12 @@ Notes:
 * If you install Discord later, run `sudo blighter-setup <child-username>` again.
 * Discord in Firefox works without any of this. The Flatpak version of Discord
   isn't handled.
-* To turn off Discord voice (UDP) for a child: `sudo blighter-setup <child> --no-voice`.
+* Discord is allowed by default; switch it off or on in the parent app (Rules
+  tab, *Allow Discord*), or with `sudo blighter-setup <child> --no-discord`.
+  Running setup again keeps the earlier choice.
+* Upgrading from an earlier version (`sudo apt install ./blighter-child_1.2.2_all.deb`)
+  rewrites the Squid rules with the new settings (neutral error page, Discord
+  switch) and keeps the lists.
 * To undo everything: `sudo blighter-setup --remove` (or `sudo apt remove blighter-child`).
 
 ## 1b. Set up a child's Windows 10/11 laptop
@@ -74,12 +91,23 @@ Notes:
 Use 64-bit Windows 10 or 11 (Home or Pro). Sign in to a **parent
 administrator account** on the laptop, not the child's.
 
-1. Copy `blighter-child-windows-1.2.1.zip` to the laptop and **unzip it**
+1. Copy `blighter-child-windows-1.2.2.zip` to the laptop and **unzip it**
    (right-click → *Extract All*). Don't run it from inside the zip.
 2. Double-click **Install Blighter Child.cmd** and accept the Windows prompt.
-3. Pick the child's account from the list, then choose a password (10+
-   characters) for the hidden **blighter** administrator account. You enter
-   this password in the parent app.
+3. Setup says first that it takes **15-30 minutes** and lists the slow steps,
+   then asks *Start now?*. Answer *n* if you don't have time; nothing is changed.
+4. Pick the child's account from the list, say whether to allow Discord, then
+   choose a password (10+ characters) for the hidden **blighter**
+   administrator account. You enter this password in the parent app.
+
+While it runs, each step shows how long it usually takes and, afterwards, how
+long it took. Slow steps print a *still working* line every 30 seconds, and
+the laptop is kept awake. If setup stops part-way, through an error or
+Ctrl+C, it offers to undo what it has done so far (the default is yes). If the
+laptop is switched off part-way, running *Install Blighter Child.cmd* again
+offers to finish or undo, and the parent app's Laptop tab warns that setup
+didn't finish. To update a laptop from an earlier version, run the new
+*Install Blighter Child.cmd* over the top. Its saved "before" state is kept.
 
 Setup then:
 * **before changing anything else**, creates a Windows restore point called
@@ -128,9 +156,9 @@ user*.
 
 Notes for Windows:
 * Discord (desktop app) uses Windows' proxy setting for text. Voice and video
-  use the UDP exception. Turn that off with
-  `blighter-setup.ps1 -Child <name> -NoVoice` (run in an administrator PowerShell
-  from `C:\ProgramData\BlighterChild`).
+  use the UDP exception. Both follow the *Allow Discord* switch in the
+  parent app's Rules tab (setup asks for the starting value; `-NoVoice`
+  blocks it without asking).
 * Store apps (Microsoft Store, Xbox, Minecraft from the Store, Mail) are
   usually **offline**. Windows doesn't let them use a proxy on the same
   laptop, and their firewall rules are switched off. That also stops the child
@@ -164,10 +192,10 @@ Notes for Windows:
 
 ## 2. Install the parent app
 
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.1_all.deb`, then start
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.2_all.deb`, then start
 *Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
 
-**Windows:** run `BlighterRestrictor-Setup-1.2.1.exe` (see "Building for
+**Windows:** run `BlighterRestrictor-Setup-1.2.2.exe` (see "Building for
 Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
 click *More info → Run anyway*.
 
@@ -184,9 +212,13 @@ click *More info → Run anyway*.
   * `# text` – a comment
   * `*.example.com` and pasted web addresses are converted automatically.
     Duplicates, and entries already covered by a `.domain` entry, are removed.
-  * **Apply to laptop** sends the lists. The laptop checks them with Squid and
-    reloads it. If Squid rejects them, the previous rules are restored
-    automatically.
+  * **Allow Discord** (next to the mode) switches Discord on or off for that
+    child, whatever the lists say. Discord lines typed into a list are
+    pointed out, because they have no effect. Laptops with a child version
+    older than 1.2.2 show the switch greyed out.
+  * **Apply to laptop** sends the lists and the Discord switch. The laptop
+    checks them with Squid and reloads it. If Squid rejects them, the
+    previous rules are restored automatically.
 * **Activity tab:** the laptop's Squid log, newest first, with filters (time,
   site, blocked only), *Include older logs*, *Live* refresh every 5 seconds,
   and a *Summary by site* view. **Right-click** a row to add that site, or its
@@ -199,7 +231,9 @@ click *More info → Run anyway*.
   health checks (system, filtered user, whether the child is an
   administrator, Squid running, firewall active, proxy locked), the generated
   rules, both lists, `squid.conf` and the firewall rules.
-  *Reload Squid* re-reads the configuration on demand.
+  The settings appear straight away; the health checks follow (a few
+  seconds; on Windows up to a minute). *Reload Squid* rewrites the generated
+  rules and re-reads the configuration on demand.
 
 * **Logging out:** a child shown in **bold** has an open SSH session to their
   laptop. *Log out* closes it for the selected child, and *File → Log out of
@@ -218,7 +252,10 @@ children and passwords, so on your wife's PC add the children again.
 * A determined child with physical access could get round this using recovery
   mode or a USB boot. Setting a GRUB password and a BIOS/UEFI password closes
   that gap if it's needed later.
-* For blocked HTTPS sites the browser shows a proxy error, not a "blocked" page.
+* For blocked HTTPS sites the browser shows its own proxy error, not the
+  "This site isn't available" page, and that error mentions a proxy. Windows'
+  proxy settings also say "managed by your organisation". A curious child
+  can therefore still find out that a filter is in place.
 * DNS (port 53) stays open for the child's account. That's harmless for web
   filtering, which is done on site names by Squid.
 * Windows: a child who is an administrator can undo everything (see 1b).
@@ -256,7 +293,7 @@ on a Windows 10/11 PC instead:
    ```powershell
    powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
    ```
-4. Result: `dist\BlighterRestrictor-Setup-1.2.1.exe`. Install it on your wife's PC.
+4. Result: `dist\BlighterRestrictor-Setup-1.2.2.exe`. Install it on your wife's PC.
    (Without Inno Setup you get a runnable folder `dist\BlighterRestrictor\` instead.)
 
 ## Licence
@@ -281,7 +318,8 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 
 | Path | Purpose |
 |---|---|
-| `common/domains.py` | Domain validation shared by the app and the laptop helper |
+| `common/domains.py` | Domain validation and the Discord switch rules, shared by the app and the laptop helpers |
+| `common/blockpage.py` | The neutral error page and Squid header settings, shared by both laptop helpers |
 | `parent/blighter_parent/` | The GUI app (Qt / PySide6, Paramiko SSH, keyring) |
 | `parent/packaging/` | Ubuntu launcher, menu entry and package control file |
 | `child/files/usr/sbin/blighter-setup` | One-time laptop setup / removal |
