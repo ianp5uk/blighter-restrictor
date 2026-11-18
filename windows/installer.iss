@@ -5,7 +5,8 @@
 ; installs for the current user (no administrator rights needed), adds a
 ; Start-menu shortcut and an optional desktop shortcut, and an uninstaller.
 ; Settings (%APPDATA%\BlighterRestrictor) and saved passwords (Windows
-; Credential Manager) are kept on uninstall.
+; Credential Manager) are kept on uninstall.  Third-party notices and licence
+; texts are installed next to the program.
 ; Built by windows\build_windows.ps1, which passes /DAppVersion=<ver>.
 ;
 ; Copyright (C) 2026 Ways Property
@@ -44,6 +45,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "..\dist\BlighterRestrictor\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]

@@ -2,8 +2,10 @@
 # Blighter Restrictor - one-time setup of a child's WINDOWS laptop.
 #
 # Purpose: prepare this laptop so the parent app can manage it over the home
-# network.  Safe to run again.  Normally started by "Install Blighter
-# Child.cmd" (which asks for administrator rights).  It:
+# network.  Safe to run again.  Normally started by the Windows installer
+# BlighterChild-Setup-<ver>.exe (-Gui, no console window: the installer asks
+# every question first and shows this script's progress on its own page), or
+# by "Install Blighter Child.cmd" for technical users.  It:
 #   1. checks the child's account and WARNS if it is an administrator
 #   2. copies the helper and its private Python to C:\ProgramData\BlighterChild
 #      (locked so only administrators can change it) and records the
@@ -11,8 +13,15 @@
 #   3. BEFORE CHANGING ANYTHING ELSE: creates a Windows restore point
 #      ("Before Blighter Restrictor") and saves the laptop's current
 #      settings (state\pre-install.json) so removal can put them back
-#   4. installs Squid for Windows (Diladele MSI) if missing, and locks its
-#      folder the same way
+#   4. installs the tested Squid for Windows (Diladele MSI, downloaded): the
+#      download must carry a valid Diladele B.V. signature (otherwise setup
+#      stops); if it is not the exact file Blighter was tested with (SHA-256)
+#      setup carries on and says so at the end.  A Squid that an earlier
+#      Blighter installed is replaced, keeping Blighter's lists, settings and
+#      logs.  A Squid installed by something else is only replaced with
+#      -ReplaceSquid (or when the user agrees); its settings are saved to
+#      backup\squid-before-blighter first.  The MSI's firewall rule (port
+#      3128) and desktop shortcuts are removed, and the folder is locked
 #   5. creates the hidden "blighter" administrator account (password login
 #      over SSH) that the parent app uses
 #   6. installs and starts Windows' own OpenSSH Server
@@ -36,8 +45,14 @@
 #
 # Usage (PowerShell as administrator):
 #   blighter-setup.ps1 [-Child <username>] [-NoVoice] [-DnsServers "1.1.1.1 8.8.8.8"]
-#   (-NoVoice = block Discord without asking; otherwise setup asks)
+#                      [-ReplaceSquid] [-KeepPassword] [-NoMarkPrivate]
+#   (Discord is allowed on a new install, -NoVoice blocks it; a re-run keeps
+#   the earlier choice.  The parent app can change it.)
 #   blighter-setup.ps1 -Remove [-Yes]        undo everything
+#   blighter-setup.ps1 -Query                facts for the installer's pages
+#                                            (accounts, Squid owner, networks)
+# -Gui (used by the installer) = -Yes, plus "##BLIGHTER ..." progress lines
+# for the installer and no automatic undo (the installer asks instead).
 # -Yes answers every question with its default (for automated tests); the
 # blighter password is then taken from the BLIGHTER_ADMIN_PASSWORD
 # environment variable.  -TestFailAt <step> (tests only) stops with an error
@@ -57,19 +72,30 @@ param(
     [string]$DnsServers = "1.1.1.1 8.8.8.8",
     [switch]$Remove,
     [switch]$Yes,
+    [switch]$Gui,
+    [switch]$Query,
+    [switch]$ReplaceSquid,
+    [switch]$KeepPassword,
+    [switch]$NoMarkPrivate,
     [int]$TestFailAt = 0
 )
+if ($Gui) { $Yes = [switch]$true }
 
 $ErrorActionPreference = "Stop"
 # Progress bars are hidden (they flash on and off and look like a fault);
 # slow steps print their own "still working" lines instead.
 $ProgressPreference    = "SilentlyContinue"
-$Version   = "1.2.4"
+$Version   = "1.2.5"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SquidUrl  = "https://www.diladele.com/pkg/squid/7.8/squid-7.8_amd64.msi"
 $SquidPage = "https://www.diladele.com/squid/download.html"
+# The exact Squid MSI Blighter was tested with (signed by Diladele B.V.).
+$SquidSha256 = "a2ba4fde87e7deacab84c13fab20dcc1fb0e226b72fee81612f7cb66022d8cc3"
+if ($env:BLIGHTER_TEST_SQUID_SHA) { $SquidSha256 = $env:BLIGHTER_TEST_SQUID_SHA }   # tests only
+$script:SquidChanged = $false
+$script:Notes = @()
 $SidAdmins = "S-1-5-32-544"
 $SidUsers  = "S-1-5-32-545"
 $SidSystem = "S-1-5-18"
@@ -78,10 +104,17 @@ $PreFile   = Join-Path $StateDir "pre-install.json"
 $NetFile   = Join-Path $StateDir "networks-changed.txt"
 $System    = Join-Path $Dest "blighter-system.ps1"
 $Marker    = Join-Path $StateDir "setup-incomplete.txt"
+$ShaFile   = Join-Path $StateDir "squid-msi.sha256"
+$BackupDir = Join-Path $Dest "backup"
+$OurSquidBackup   = Join-Path $BackupDir "squid-blighter"
+$OtherSquidBackup = Join-Path $BackupDir "squid-before-blighter"
 
 function Say($m)  { Write-Host ""; Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "WARNING: $m" -ForegroundColor Yellow }
 function Die($m)  { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
+# Lines for the Windows installer (only with -Gui).
+function Tag($m)  { if ($Gui) { Write-Host "##BLIGHTER $m" } }
+function Note($m) { $script:Notes += $m; Tag "note $m" }
 $script:StepStart = $null
 function Write-StepTime {
     if ($script:StepStart) {
@@ -93,6 +126,7 @@ function Write-StepTime {
 function Step([int]$n, [string]$title, [string]$time) {
     Write-StepTime
     Say "$n/9 $title"
+    Tag "step $n $title"
     if ($time) { Write-Host "    (usually $time)" -ForegroundColor DarkGray }
     if ($TestFailAt -eq $n) { Die "Test failure requested at step $n (-TestFailAt)." }
 }
@@ -191,6 +225,31 @@ if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal
 if (-not [Environment]::Is64BitOperatingSystem) { Die "Squid for Windows needs 64-bit Windows." }
 if ([Environment]::OSVersion.Version.Major -lt 10) { Die "Windows 10 or newer is needed." }
 
+function Get-SquidOwner {
+    # none / blighter (an earlier Blighter installed or took over this Squid) / other
+    $r = Get-SquidRoot
+    if (-not $r) { return "none" }
+    if (Test-Path (Join-Path $r "etc\squid\blighter")) { return "blighter" }
+    if (Test-Path $PreFile) {
+        try { if (-not (Get-Content $PreFile -Raw | ConvertFrom-Json).squid_installed) { return "blighter" } } catch { }
+    }
+    return "other"
+}
+
+if ($Query) {
+    # Tab-separated facts for the installer's pages.  Nothing is changed.
+    $adminSids = Get-AdminSids
+    Get-LocalUser | Where-Object { $_.Enabled -and $_.Name -ne $Admin -and $_.Name -notin @("Administrator", "Guest", "DefaultAccount", "WDAGUtilityAccount") } |
+        ForEach-Object { Write-Output ("account`t{0}`t{1}`t{2}" -f $_.Name, $_.FullName, [int]($adminSids -contains $_.SID.Value)) }
+    Write-Output ("adminexists`t{0}" -f [int][bool](Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue))
+    Write-Output ("squid`t{0}" -f (Get-SquidOwner))
+    foreach ($np in @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
+        if ("$($np.NetworkCategory)" -eq "Public") { Write-Output ("network`t{0}" -f $np.Name) }
+    }
+    Write-Output ("incomplete`t{0}" -f [int](Test-Path $Marker))
+    exit 0
+}
+
 # ----------------------------------------------------------------- removal ---
 function Get-SquidProductCodes {
     foreach ($root in "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
@@ -278,6 +337,12 @@ if ($Remove) {
             if ($installedBySetup) { Write-Host "Squid for Windows is still installed (remove 'Squid' in Settings > Apps if you wish)." }
             else { Write-Host "Squid was installed before setup - left installed with its previous squid.conf." }
         }
+    }
+
+    if (Test-Path $OtherSquidBackup) {
+        $keep = Join-Path $env:ProgramData "Squid-settings-before-Blighter"
+        Copy-Item $OtherSquidBackup $keep -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "The Squid settings saved before Blighter replaced Squid are kept in $keep"
     }
 
     Say "The '$Admin' account"
@@ -379,6 +444,19 @@ if ($isAdmin) {
     Write-Host "  make it an administrator, sign in to it, then demote '$Child'." -ForegroundColor Yellow
     Write-Host "  *****************************************************************" -ForegroundColor Red
     if (-not $Yes) { Read-Host "Press Enter to continue anyway, or Ctrl+C to stop" | Out-Null }
+    Note "The child's account '$Child' is an administrator - see the install guide on making it a standard account."
+}
+# Squid installed by something else: only replaced with permission (decided
+# here, before anything is changed).
+$squidOwner = Get-SquidOwner
+if ($squidOwner -eq "other" -and -not $ReplaceSquid) {
+    Write-Host "Squid (web filter software) is already installed on this laptop, but it wasn't"
+    Write-Host "installed by Blighter.  Something else may be using it.  Blighter needs to replace"
+    Write-Host "it with the version it was tested with; its settings are saved first."
+    if ($Yes -or -not (Ask "Replace Squid?" "n")) {
+        Die "Squid is already installed and was not installed by Blighter - nothing has been changed.  Run setup again and choose 'Replace Squid' to continue."
+    }
+    $ReplaceSquid = [switch]$true
 }
 
 # --------------------------------------------------------- 2. helper files ---
@@ -399,11 +477,11 @@ Lock-Folder $Dest
 # Discord: one switch for its web addresses (Squid) and voice/video (firewall).
 # The parent app can change it later; a re-run keeps the earlier choice as the default.
 $oldConf = Join-Path $Dest "child.conf"
-$voiceDefault = "y"
-if ((Test-Path $oldConf) -and (Select-String -Path $oldConf -Pattern '^\s*ALLOW_VOICE_UDP\s*=\s*"?no' -Quiet)) { $voiceDefault = "n" }
+# Not asked at setup: allowed on a new install, an earlier choice is kept.
+$voice = "yes"
+if ((Test-Path $oldConf) -and (Select-String -Path $oldConf -Pattern '^\s*ALLOW_VOICE_UDP\s*=\s*"?no' -Quiet)) { $voice = "no" }
 if ($NoVoice) { $voice = "no" }
-elseif (Ask "Allow Discord (text chat, voice and video calls)?  The parent app can change this later." $voiceDefault) { $voice = "yes" }
-else { $voice = "no" }
+Write-Host ("Discord: {0} (the parent app can change this)." -f $(if ($voice -eq "yes") { "allowed" } else { "blocked" }))
 # Home network (printers, NAS...): kept from an earlier setup; otherwise the
 # private (RFC 1918) network the laptop is on now.  The parent app can change it.
 function Get-OldConf([string]$key) {
@@ -465,6 +543,7 @@ if (-not (Test-Path $PreFile)) {
         Write-Host "Restore point 'Before Blighter Restrictor' created."
     } catch {
         Warn "Could not create a restore point ($($_.Exception.Message)).  Removal will still put the settings back."
+        Note "Windows could not create a restore point (removal will still put the settings back)."
         if (-not $Yes) { Read-Host "Press Enter to continue, or Ctrl+C to stop" | Out-Null }
     }
 }
@@ -475,9 +554,30 @@ Set-Content -Path $Marker -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 
 # ------------------------------------------------------------- 4. Squid ---
 Step 4 "Squid for Windows" "1-5 minutes"
+function Copy-IfThere([string]$from, [string]$to) {
+    if (Test-Path $from) {
+        if (-not (Test-Path $to)) { New-Item -ItemType Directory -Path $to -Force | Out-Null }
+        Copy-Item (Join-Path $from "*") $to -Recurse -Force
+    }
+}
+function Remove-SquidExtras {
+    # The MSI opens port 3128 to the local network and adds two desktop
+    # shortcuts.  Blighter's Squid only listens on the laptop itself.
+    Get-NetFirewallRule -DisplayName "Squid Cache Server" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    foreach ($d in @([Environment]::GetFolderPath("CommonDesktopDirectory"), [Environment]::GetFolderPath("Desktop"))) {
+        foreach ($n in "Squid Terminal.lnk", "Squid Server Tray.lnk") {
+            $f = Join-Path $d $n
+            if ($d -and (Test-Path $f)) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
 $root = Get-SquidRoot
-if (-not $root) {
-    Write-Host "Squid is not installed - downloading it from Diladele..."
+$owner = Get-SquidOwner
+$recorded = if (Test-Path $ShaFile) { (Get-Content $ShaFile -TotalCount 1).Trim() } else { "" }
+if ($root -and $owner -eq "blighter" -and $recorded -eq $SquidSha256) {
+    Write-Host "The tested Squid is already installed."
+} else {
+    Write-Host "Downloading Squid from Diladele..."
     $msi = Join-Path $env:TEMP "squid-blighter.msi"
     try {
         Invoke-Slow "downloading Squid" {
@@ -487,15 +587,74 @@ if (-not $root) {
             Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
         } @($SquidUrl, $msi) | Out-Null
     } catch {
-        Die "Download failed ($($_.Exception.Message)).  Install Squid yourself from $SquidPage and run this again."
+        Die "The Squid download failed ($($_.Exception.Message)).  Check your internet connection and run setup again."
+    }
+    # 1. It must really be Diladele's file (valid signature).
+    $sig = Get-AuthenticodeSignature -FilePath $msi
+    $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "" }
+    Write-Host "Signature: $($sig.Status) - $signer"
+    if ("$($sig.Status)" -ne "Valid" -or $signer -notmatch 'CN="?Diladele B\.V\.') {
+        Remove-Item $msi -Force -ErrorAction SilentlyContinue
+        Die "The Squid download could not be verified.  Check your internet connection and run setup again."
+    }
+    # 2. Is it the exact file Blighter was tested with?  If not, carry on and say so at the end.
+    $hash = (Get-FileHash -Path $msi -Algorithm SHA256).Hash.ToLower()
+    if ($hash -ne $SquidSha256) {
+        $script:SquidChanged = $true
+        Warn "This Squid download is not the exact file Blighter $Version was tested with (SHA-256 $hash)."
+    }
+    if ($root) {
+        Write-Host "Replacing the Squid already installed in $root ($(if ($owner -eq 'blighter') { 'installed by Blighter' } else { 'not installed by Blighter' }))..."
+        if ($owner -eq "blighter") {
+            # Keep Blighter's lists, mode, switches and the activity log.
+            if (Test-Path $OurSquidBackup) { Remove-Item $OurSquidBackup -Recurse -Force }
+            New-Item -ItemType Directory -Path $OurSquidBackup -Force | Out-Null
+            Copy-IfThere (Join-Path $root "etc\squid\blighter") (Join-Path $OurSquidBackup "blighter")
+            Copy-IfThere (Join-Path $root "var\log\squid") (Join-Path $OurSquidBackup "logs")
+            Get-ChildItem (Join-Path $root "etc\squid") -Filter "squid.conf.pre-blighter-*" -ErrorAction SilentlyContinue |
+                Copy-Item -Destination $OurSquidBackup -Force
+            Write-Host "Blighter's lists and settings saved to $OurSquidBackup"
+        } else {
+            if (-not (Test-Path $OtherSquidBackup)) {
+                New-Item -ItemType Directory -Path $OtherSquidBackup -Force | Out-Null
+                Copy-IfThere (Join-Path $root "etc\squid") (Join-Path $OtherSquidBackup "etc-squid")
+            }
+            Write-Host "The existing Squid settings are saved in $OtherSquidBackup"
+        }
+        Stop-Service squidsrv -Force -ErrorAction SilentlyContinue
+        Get-Process squid -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        foreach ($code in @(Get-SquidProductCodes)) {
+            $p = Start-Process msiexec.exe -ArgumentList "/x $code /qn /norestart" -Wait -PassThru
+            Write-Host "Old Squid uninstalled (code $($p.ExitCode))."
+        }
+        if ($owner -eq "blighter" -and (Test-Path $root)) { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
     }
     Write-Host "Installing Squid..."
     $code = Start-Slow "installing Squid" "msiexec.exe" "/i `"$msi`" /qn /norestart INSTALLFOLDER=`"C:\Squid\`""
-    if ($code -ne 0 -and $code -ne 3010) { Die "The Squid installer failed (code $code)." }
     Remove-Item $msi -Force -ErrorAction SilentlyContinue
+    if ($code -ne 0 -and $code -ne 3010) { Die "The Squid installer failed (code $code)." }
     $root = Get-SquidRoot
     if (-not $root) { Die "Squid did not install correctly." }
+    Remove-SquidExtras
+    if ($owner -eq "blighter" -and (Test-Path $OurSquidBackup)) {
+        Copy-IfThere (Join-Path $OurSquidBackup "blighter") (Join-Path $root "etc\squid\blighter")
+        Copy-IfThere (Join-Path $OurSquidBackup "logs") (Join-Path $root "var\log\squid")
+        Get-ChildItem $OurSquidBackup -Filter "squid.conf.pre-blighter-*" -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination (Join-Path $root "etc\squid") -Force
+        Write-Host "Blighter's lists, settings and activity log put back."
+    } elseif ($owner -eq "other") {
+        # So that removal puts the earlier Squid configuration back.
+        $old = Join-Path $OtherSquidBackup "etc-squid\squid.conf"
+        if (Test-Path $old) {
+            $to = Join-Path $root ("etc\squid\squid.conf.pre-blighter-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+            Copy-Item $old $to -Force
+            (Get-Item $to).LastWriteTime = Get-Date
+        }
+    }
+    if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
+    Set-Content -Path $ShaFile -Value $hash
 }
+Remove-SquidExtras
 Write-Host "Squid is in $root"
 Lock-Folder $root
 # The Squid log is written by the service (SYSTEM); the helper reads it as administrator.
@@ -507,13 +666,18 @@ $user = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
 $setPw = $true
 if ($user) {
     Write-Host "Account '$Admin' already exists."
-    $setPw = Ask "Change its password?"
+    if ($KeepPassword) { $setPw = $false; Write-Host "Its password is kept." }
+    elseif ($Yes) { $setPw = [bool]$env:BLIGHTER_ADMIN_PASSWORD }
+    else { $setPw = Ask "Change its password?" }
 }
-if ($setPw -and $Yes -and $env:BLIGHTER_ADMIN_PASSWORD) {
+if ($setPw -and $Yes) {
+    if (-not $env:BLIGHTER_ADMIN_PASSWORD) { Die "No password was given for the '$Admin' account." }
     $p1 = ConvertTo-SecureString $env:BLIGHTER_ADMIN_PASSWORD -AsPlainText -Force
     try {
         if ($user) { Set-LocalUser -Name $Admin -Password $p1 }
         else { New-LocalUser -Name $Admin -Password $p1 -FullName "Blighter Restrictor" -Description "Used by the Blighter Restrictor parent app" | Out-Null }
+    } catch [Microsoft.PowerShell.Commands.InvalidPasswordException] {
+        Die "Windows rejected the password for '$Admin'.  On this laptop it may need upper and lower case letters, a digit and a symbol, and it must not contain the word '$Admin'.  Run setup again with a different password."
     } catch { Die "Could not set the password: $($_.Exception.Message)" }
     $setPw = $false
 }
@@ -571,7 +735,10 @@ Write-Host "SSH server running."
 # -------------------------------------------------------------- 7. squid.conf ---
 Step 7 "Squid configuration" "under a minute"
 $conf = Join-Path $root "etc\squid\squid.conf"
-if ((Test-Path $conf) -and -not ((Get-Content $conf -TotalCount 5) -match "Blighter Restrictor")) {
+# Keep the first copy of the configuration Blighter found (also put back when
+# Squid was replaced above), so removal restores that one.
+$preBackups = @(Get-ChildItem (Split-Path $conf) -Filter "squid.conf.pre-blighter-*" -ErrorAction SilentlyContinue)
+if ((Test-Path $conf) -and -not $preBackups -and -not ((Get-Content $conf -TotalCount 5) -match "Blighter Restrictor")) {
     $bak = "$conf.pre-blighter-" + (Get-Date -Format "yyyyMMdd-HHmmss")
     Copy-Item $conf $bak
     Write-Host "Existing squid.conf saved as $(Split-Path -Leaf $bak)"
@@ -610,7 +777,10 @@ foreach ($np in $profiles) {
     Write-Host ("  {0}: {1}" -f $np.Name, $np.NetworkCategory)
     if ($np.NetworkCategory -eq "Public") {
         Write-Host "  The parent app can only connect while Windows calls the network 'Private'."
-        if (Ask "  Is '$($np.Name)' your HOME network?  Mark it Private?" "y") {
+        if ($NoMarkPrivate) {
+            Write-Host "  Left as Public (as chosen)."
+            Note "The network '$($np.Name)' was left as Public - the parent app cannot connect until Windows calls the home network Private."
+        } elseif (Ask "  Is '$($np.Name)' your HOME network?  Mark it Private?" "y") {
             Set-NetConnectionProfile -InterfaceIndex $np.InterfaceIndex -NetworkCategory Private
             Add-Content -Path $NetFile -Value ("{0}`t{1}" -f $np.InterfaceAlias, "Public")
             Write-Host "  '$($np.Name)' is now Private (removal sets it back)."
@@ -620,13 +790,18 @@ foreach ($np in $profiles) {
 
 Write-StepTime
 Remove-Item $Marker -Force -ErrorAction SilentlyContinue
+if (Test-Path $OurSquidBackup) { Remove-Item $OurSquidBackup -Recurse -Force -ErrorAction SilentlyContinue }
 $SetupDone = $true
 } finally {
     # Runs after an error (Die), an unexpected failure, or Ctrl+C.
     if (-not $SetupDone) {
         Write-Host ""
         Write-Host "Setup did NOT finish." -ForegroundColor Red
-        if (Test-Path $PreFile) {
+        if (Test-Path $OurSquidBackup) { Write-Host "Blighter's lists and settings are saved in $OurSquidBackup" }
+        if ($Gui) {
+            # The installer asks whether to undo.
+            Tag ("failed undo={0}" -f [int](Test-Path $PreFile))
+        } elseif (Test-Path $PreFile) {
             $undo = $true
             Write-Host "Undoing removes Blighter Restrictor completely and puts the laptop back as it was"
             Write-Host "before Blighter was first installed (as 'Remove Blighter Child.cmd' does)."
@@ -649,6 +824,10 @@ Say "Setup complete"
 $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
          Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
          ForEach-Object { $_.IPAddress })
+Tag ("result child={0}" -f $Child)
+Tag ("result admin={0}" -f $Admin)
+Tag ("result ip={0}" -f ($ips -join ' '))
+if ($script:SquidChanged) { Tag "squid-updated" }
 Write-Host "Child account : $Child$(if ($isAdmin) { '   (ADMINISTRATOR - see warning above)' })"
 Write-Host "Admin account : $Admin  (use this login and its password in the parent app)"
 Write-Host "IPv4 address  : $($ips -join ' ')"
@@ -660,3 +839,10 @@ Write-Host ""
 Write-Host "If something stops working, run 'Pause Blighter Child.cmd' in $Dest"
 Write-Host "to switch filtering off without uninstalling (and 'Resume ...' to switch it on)."
 Write-Host "'Remove Blighter Child.cmd' there undoes everything."
+if ($script:SquidChanged) {
+    Write-Host ""
+    Write-Host "Setup finished. Note: Squid, the web filter Blighter uses, has been updated by its"
+    Write-Host "maintainer since this version of Blighter was tested. Filtering should work normally."
+    Write-Host "If you notice any problems, please email ianp5@pm.me."
+}
+Tag "done"

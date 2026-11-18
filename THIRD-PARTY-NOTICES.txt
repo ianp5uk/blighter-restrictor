@@ -1,0 +1,74 @@
+Blighter Restrictor - third-party software notices.
+Purpose: lists the software by other people that is shipped inside the
+Blighter Restrictor installers and packages, with its licence and where its
+source code can be obtained.  The full licence texts are in the "licenses"
+folder; the exact licence files of each Python package in the Windows parent
+app are in its "third-party-licenses" folder.
+
+Blighter Restrictor itself: Copyright (C) 2026 Ways Property, licensed under
+the GNU General Public License version 3 or later (LICENSE.txt).  Source:
+https://github.com/ianp5uk/blighter-restrictor
+
+-----------------------------------------------------------------------------
+Parent app for Windows (BlighterRestrictor-Setup-<ver>.exe)
+-----------------------------------------------------------------------------
+Qt for Python (PySide6) and shiboken6, and the Qt 6 libraries they contain
+  The Qt Company Ltd. and contributors.  Used under the GNU Lesser General
+  Public License v3 (licenses/LGPL-3.0.txt, with the GPL v3 in LICENSE.txt).
+  The Qt libraries are separate DLL files in the program folder, so they can
+  be replaced with a compatible build.  Source:
+  https://code.qt.io/cgit/pyside/pyside-setup.git/ and
+  https://download.qt.io/official_releases/qt/
+paramiko (SSH)
+  Robey Pointer, Jeff Forcier and contributors.  GNU Lesser General Public
+  License v2.1 or later (licenses/LGPL-2.1.txt).  It is a separate Python
+  package inside the program folder and can be replaced.  Source:
+  https://github.com/paramiko/paramiko
+cryptography (with OpenSSL 3), bcrypt, PyNaCl (with libsodium)
+  The Python Cryptographic Authority and contributors; OpenSSL Project;
+  Frank Denis (libsodium).  Apache License 2.0 (licenses/Apache-2.0.txt) or
+  BSD (cryptography is dual-licensed), ISC (libsodium).  Source:
+  https://github.com/pyca/cryptography  https://github.com/pyca/bcrypt
+  https://github.com/pyca/pynacl
+cffi, pycparser, keyring, jaraco.*, more-itertools, pywin32-ctypes and other
+small Python packages
+  MIT or BSD licences; their own licence files are in third-party-licenses.
+  Source: https://pypi.org/
+Python 3
+  Python Software Foundation.  PSF License (licenses/Python-PSF.txt).
+  Source: https://www.python.org/downloads/source/
+PyInstaller bootloader
+  The PyInstaller team.  GPL v2 with an exception that allows bundled
+  programs to be distributed under their own terms.
+
+-----------------------------------------------------------------------------
+Child component for Windows (BlighterChild-Setup-<ver>.exe and the ZIP)
+-----------------------------------------------------------------------------
+Python 3 "embeddable" distribution (python folder)
+  Python Software Foundation.  PSF License; its own LICENSE.txt (which also
+  covers the libraries it includes, such as OpenSSL, libffi, SQLite, zlib,
+  bzip2 and xz) is in the python folder.
+  Source: https://www.python.org/downloads/source/
+
+Not included, downloaded during setup:
+  Squid for Windows (Diladele B.V. installer, Squid under the GNU GPL v2, with
+  the Cygwin runtime and libraries).  Setup downloads it from
+  https://www.diladele.com/squid/download.html and checks its signature.
+  Source: http://www.squid-cache.org/  https://github.com/diladele/squid-windows
+  https://cygwin.com/
+  OpenSSH Server is Windows' own optional feature, installed from Windows
+  Update.
+
+-----------------------------------------------------------------------------
+Both Windows installers
+-----------------------------------------------------------------------------
+Inno Setup
+  Copyright (C) 1997-2026 Jordan Russell; portions Martijn Laan.  Inno Setup
+  licence (licenses/Inno-Setup.txt).  https://jrsoftware.org/isinfo.php
+
+-----------------------------------------------------------------------------
+Ubuntu packages (.deb)
+-----------------------------------------------------------------------------
+The Ubuntu packages contain only Blighter Restrictor's own files.  Python,
+PySide6, paramiko, keyring, Squid, OpenSSH and nftables are installed from
+Ubuntu's own repositories, under their own licences.

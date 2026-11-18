@@ -15,6 +15,8 @@
 # reported at start-up so the extra entry can be removed.
 # Log out: "Log out" button (selected child), File > Log out of all laptops,
 # automatically after 5 minutes without use, and always when the app closes.
+# Help > About shows the version, licence and donation links (Ko-fi, GitHub
+# Sponsors).
 # Text size: View > Larger / Smaller / Normal text (Ctrl +, Ctrl -, Ctrl 0),
 # remembered between runs - for high-resolution screens.
 # Look and feel (colours, buttons, cursor, Linux font/check boxes): style.py.
@@ -400,6 +402,9 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, APP_NAME,
                           f"<b>{APP_NAME} {__version__}</b><br>Monitor and restrict web access on "
                           "children's Ubuntu and Windows laptops using Squid.<br><br>"
+                          "Free to use - donations welcome: "
+                          "<a href='https://ko-fi.com/ianp5'>Ko-fi</a> or "
+                          "<a href='https://github.com/sponsors/ianp5uk'>GitHub Sponsors</a>.<br><br>"
                           f"{COPYRIGHT}<br>Licensed under the {LICENSE_NAME}. "
                           "This program comes with ABSOLUTELY NO WARRANTY. It is free "
                           "software: you may redistribute and modify it under the terms of "

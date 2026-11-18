@@ -2,7 +2,8 @@
 # Blighter Restrictor - build the Windows app and installer.
 #
 # Purpose: on a Windows 10/11 PC, create a private Python environment, build
-# BlighterRestrictor.exe with PyInstaller, then (if Inno Setup 6 is
+# BlighterRestrictor.exe with PyInstaller (with the licence files of the
+# bundled Python packages in third-party-licenses), then (if Inno Setup 6 is
 # installed) wrap it into dist\BlighterRestrictor-Setup-<ver>.exe.
 # Requirements: Python 3.11+ from python.org ("py" launcher), and optionally
 # Inno Setup 6 (https://jrsoftware.org/isdl.php) for the installer.
@@ -57,6 +58,30 @@ if (-not (Test-Path $py3dll)) { throw "python3.dll not found in $base" }
 if ($LASTEXITCODE) { throw "PyInstaller failed" }
 
 Remove-Item parent\blighter_parent\domains.py -Force
+
+# The exact licence files of every Python package bundled into the app
+# (build tools such as PyInstaller and pip are not shipped, so are skipped).
+$lic = "dist\BlighterRestrictor\third-party-licenses"
+@'
+import importlib.metadata as m, os, shutil, sys
+out = sys.argv[1]
+skip = {"pip", "setuptools", "wheel", "pyinstaller", "pyinstaller-hooks-contrib", "altgraph", "pefile", "packaging"}
+for d in m.distributions():
+    name = (d.metadata["Name"] or "").lower()
+    if not name or name in skip:
+        continue
+    files = [f for f in (d.files or []) if any(k in f.name.lower() for k in ("licen", "copying", "notice", "authors"))]
+    for f in files:
+        src = f.locate()
+        if os.path.isfile(src):
+            dst = os.path.join(out, name, f.name)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+    print("licence files for", name, len(files))
+'@ | Set-Content -Path collect_licences.py -Encoding ASCII
+& $py collect_licences.py $lic
+if ($LASTEXITCODE) { throw "collecting licence files failed" }
+Remove-Item collect_licences.py -Force
 
 $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
 if (Test-Path $iscc) {

@@ -6,16 +6,21 @@
 #                    Setup, check the exe starts (--self-test), keep the
 #                    installer as a downloadable artifact
 #   child-package  - build blighter-child-windows-<ver>.zip (on Linux)
+#   child-setup    - build BlighterChild-Setup-<ver>.exe (Inno Setup) from it
 #   child-test     - first check that a setup stopped part-way (-TestFailAt 7)
-#                    undoes itself, then install that package on a Windows
-#                    runner and check it for real (including how long
+#                    undoes itself; then install another program's Squid and
+#                    check the installer refuses to replace it without
+#                    /REPLACESQUID and keeps its settings when it does;
+#                    install with the Setup.exe (silent) and check it for real (including how long
 #                    "status" takes and the neutral block page): Squid, firewall (direct web access blocked,
 #                    access through Squid allowed, blocked site refused),
 #                    the Opera switch, the SSH rule's addresses, the Brave
 #                    and Vivaldi proxy policies,
 #                    the parent app's SSH connection code against Windows'
-#                    OpenSSH, the self-repair task, pause / resume, then
-#                    removal - checking the laptop's settings afterwards
+#                    OpenSSH, the self-repair task, pause / resume, a re-run
+#                    that replaces Blighter's own Squid (lists and log kept;
+#                    "Squid updated" note when the file differs), then
+#                    removal through the uninstaller - checking the laptop's settings afterwards
 #                    match those recorded before setup.
 #
 # Copyright (C) 2026 Ways Property
@@ -75,10 +80,43 @@ jobs:
           path: dist/blighter-child-windows-*.zip
           if-no-files-found: error
 
-  child-test:
+  child-setup:
     needs: child-package
     runs-on: windows-latest
-    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: blighter-child-windows
+          path: pkg
+      - name: Ensure Inno Setup 6.3 or later
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          $v = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "Inno Setup $v"
+          if ([version]($v -replace '[^0-9.].*$', '') -lt [version]"6.3") { choco upgrade innosetup -y --no-progress }
+      - name: Build child installer
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path parent\blighter_parent\__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          New-Item -ItemType Directory dist -Force | Out-Null
+          Copy-Item (Get-ChildItem pkg\*.zip).FullName dist\blighter-child-package.zip
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=$ver" windows\child-installer.iss
+          if ($LASTEXITCODE) { throw "Inno Setup failed" }
+          Get-ChildItem dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlighterChild-Windows-Setup
+          path: dist/BlighterChild-Setup-*.exe
+          if-no-files-found: error
+
+  child-test:
+    needs: [child-package, child-setup]
+    runs-on: windows-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -88,6 +126,10 @@ jobs:
         with:
           name: blighter-child-windows
           path: pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: BlighterChild-Windows-Setup
+          path: setup
       - name: Prepare test machine
         shell: pwsh
         run: |
@@ -158,17 +200,57 @@ jobs:
           Write-Host "OK: interrupted setup undone"
           & "$env:RUNNER_TEMP\runner-rules.ps1"
           $global:LASTEXITCODE = 0
-      - name: Install the child component
+      - name: Another program's Squid is not replaced without permission
         shell: pwsh
         run: |
+          # Install Diladele's Squid directly, as "another program" would.
+          Invoke-WebRequest https://www.diladele.com/pkg/squid/7.8/squid-7.8_amd64.msi -OutFile "$env:RUNNER_TEMP\other.msi" -UseBasicParsing
+          $p = Start-Process msiexec.exe -ArgumentList "/i `"$env:RUNNER_TEMP\other.msi`" /qn /norestart" -Wait -PassThru
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "other Squid install failed ($($p.ExitCode))" }
+          Add-Content C:\Squid\etc\squid\squid.conf "`n# OTHER-PROGRAM-CONFIG"
+          $b = Get-Content "$env:RUNNER_TEMP\before.json" -Raw | ConvertFrom-Json
+          $b.squid = $true
+          $b | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\before.json"
           $dir = (Get-ChildItem pkg -Directory | Select-Object -First 1).FullName
+          $q = powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dir\blighter-setup.ps1" -Query
+          $q | Write-Host
+          if (-not ($q -match "^squid`tother$")) { throw "Query did not report another program's Squid" }
+          if (-not ($q -match "^account`ttestkid`t")) { throw "Query did not list testkid" }
+          $exe = (Get-ChildItem setup\BlighterChild-Setup-*.exe).FullName
+          $p = Start-Process $exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CHILD=testkid /LOG=`"$env:RUNNER_TEMP\inno-refuse.log`"" -Wait -PassThru
+          Write-Host "Setup exit code without /REPLACESQUID: $($p.ExitCode)"
+          Get-Content "$env:TEMP\Blighter-Child-Setup.log" -ErrorAction SilentlyContinue | Select-Object -Last 15
+          if ($p.ExitCode -eq 0) { throw "setup should have refused to replace another program's Squid" }
+          if (Test-Path C:\ProgramData\BlighterChild\state\pre-install.json) { throw "setup changed the laptop although it refused" }
+          if (-not (Select-String C:\Squid\etc\squid\squid.conf -Pattern "OTHER-PROGRAM-CONFIG" -Quiet)) { throw "other program's squid.conf was changed" }
+          Write-Host "OK: another program's Squid left alone"
+          $global:LASTEXITCODE = 0
+      - name: Install the child component with the Setup.exe
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem setup\BlighterChild-Setup-*.exe).FullName
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dir\blighter-setup.ps1" -Child testkid -Yes
-          $code = $LASTEXITCODE
-          Write-Host ("Setup took {0:n0} seconds" -f $sw.Elapsed.TotalSeconds)
+          $p = Start-Process $exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CHILD=testkid /REPLACESQUID /LOG=`"$env:RUNNER_TEMP\inno.log`"" -Wait -PassThru
+          Write-Host ("Setup took {0:n0} seconds, exit code {1}" -f $sw.Elapsed.TotalSeconds, $p.ExitCode)
+          Get-Content "$env:TEMP\Blighter-Child-Setup.log"
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\inno.log" | Select-Object -Last 40; throw "Setup.exe failed ($($p.ExitCode))" }
+          if (-not (Select-String "$env:TEMP\Blighter-Child-Setup.log" -Pattern "##BLIGHTER done" -Quiet)) { throw "setup did not report done" }
           if (Test-Path C:\ProgramData\BlighterChild\state\setup-incomplete.txt) { throw "setup-incomplete marker left after a finished setup" }
+          if (-not (Select-String C:\ProgramData\BlighterChild\backup\squid-before-blighter\etc-squid\squid.conf -Pattern "OTHER-PROGRAM-CONFIG" -Quiet)) { throw "other program's Squid settings not saved" }
+          $pre = @(Get-ChildItem C:\Squid\etc\squid -Filter "squid.conf.pre-blighter-*")
+          if ($pre.Count -ne 1 -or -not (Select-String $pre[0].FullName -Pattern "OTHER-PROGRAM-CONFIG" -Quiet)) { throw "pre-blighter backup is not the other program's squid.conf ($($pre.Name -join ','))" }
+          if (Get-NetFirewallRule -DisplayName "Squid Cache Server" -ErrorAction SilentlyContinue) { throw "Squid's port 3128 firewall rule left" }
+          foreach ($f in "$env:PUBLIC\Desktop\Squid Terminal.lnk", "$env:PUBLIC\Desktop\Squid Server Tray.lnk") { if (Test-Path $f) { throw "shortcut left: $f" } }
+          $sha = (Get-Content C:\ProgramData\BlighterChild\state\squid-msi.sha256).Trim()
+          if ($sha -ne "a2ba4fde87e7deacab84c13fab20dcc1fb0e226b72fee81612f7cb66022d8cc3") { throw "recorded Squid hash $sha" }
+          if (Select-String "$env:TEMP\Blighter-Child-Setup.log" -Pattern "##BLIGHTER squid-updated" -Quiet) { throw "tested Squid reported as updated" }
+          $u = Get-ChildItem HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall | Get-ItemProperty | Where-Object { $_.DisplayName -like "Blighter Child*" }
+          if (-not $u) { throw "no entry in Settings > Apps" }
+          Write-Host "Settings > Apps: $($u.DisplayName) $($u.DisplayVersion)"
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Blighter Child\Pause filtering (parent).lnk")) { throw "Pause shortcut missing" }
+          if (-not (Test-Path "${env:ProgramFiles}\Blighter Child\THIRD-PARTY-NOTICES.txt")) { throw "notices not installed" }
           icacls C:\Squid; icacls C:\ProgramData\BlighterChild; icacls C:\ProgramData\BlighterChild\python\python.exe
-          if ($code) { throw "setup failed ($code)" }
+          Write-Host "OK: installed with the Setup.exe"
       - name: Check filtering
         shell: pwsh
         run: |
@@ -339,10 +421,51 @@ jobs:
           $st = & C:\ProgramData\BlighterChild\blighter-apply.cmd status | ConvertFrom-Json
           if ($st.paused -or -not $st.firewall_active) { throw "status after resume" }
           Write-Host "OK: resumed - direct web access blocked again"
-      - name: Remove and compare with the state before setup
+      - name: Re-run replaces Blighter's own Squid and keeps the lists
+        shell: pwsh
+        run: |
+          $h = "C:\ProgramData\BlighterChild\blighter-apply.cmd"
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".keepme-ci.example"]}' | & $h set | ConvertFrom-Json
+          if (-not $r.ok) { throw "set failed: $($r.message)" }
+          $logLines = @(Get-Content C:\Squid\var\log\squid\access.log -ErrorAction SilentlyContinue).Count
+          Write-Host "access.log lines before: $logLines"
+          # Force a reinstall, and pretend the download differs from the tested file.
+          Remove-Item C:\ProgramData\BlighterChild\state\squid-msi.sha256 -Force
+          $env:BLIGHTER_TEST_SQUID_SHA = "0" * 64
+          $exe = (Get-ChildItem setup\BlighterChild-Setup-*.exe).FullName
+          Remove-Item "$env:TEMP\Blighter-Child-Setup.log" -ErrorAction SilentlyContinue
+          $p = Start-Process $exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CHILD=testkid /KEEPPASSWORD /LOG=`"$env:RUNNER_TEMP\inno2.log`"" -Wait -PassThru
+          Remove-Item Env:\BLIGHTER_TEST_SQUID_SHA
+          Get-Content "$env:TEMP\Blighter-Child-Setup.log"
+          if ($p.ExitCode -ne 0) { throw "re-run failed ($($p.ExitCode))" }
+          if (-not (Select-String "$env:TEMP\Blighter-Child-Setup.log" -Pattern "Old Squid uninstalled" -Quiet)) { throw "Squid was not replaced" }
+          if (-not (Select-String "$env:TEMP\Blighter-Child-Setup.log" -Pattern "##BLIGHTER squid-updated" -Quiet)) { throw "changed Squid not reported" }
+          $g = (& $h get) | ConvertFrom-Json
+          if (-not ($g.block -contains ".keepme-ci.example")) { throw "block list not kept: $($g.block -join ',')" }
+          $after = @(Get-Content C:\Squid\var\log\squid\access.log -ErrorAction SilentlyContinue).Count
+          Write-Host "access.log lines after: $after"
+          if ($after -lt $logLines) { throw "activity log not kept" }
+          if (Test-Path C:\ProgramData\BlighterChild\backup\squid-blighter) { throw "temporary backup not deleted" }
+          $st = & $h status | ConvertFrom-Json
+          if (-not $st.squid_running -or -not $st.firewall_active) { throw "not filtering after the re-run" }
+          python ci_ssh.py $env:BLIGHTER_ADMIN_PASSWORD
+          if ($LASTEXITCODE) { throw "SSH with the kept password failed" }
+          Write-Host "OK: Blighter's Squid replaced, lists and log kept, password kept, update note shown"
+      - name: Remove with the uninstaller and compare with the state before setup
         if: always()
         shell: pwsh
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\BlighterChild\blighter-setup.ps1 -Remove -Yes
+          $u = Get-ChildItem HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall | Get-ItemProperty | Where-Object { $_.DisplayName -like "Blighter Child*" }
+          if ($u) {
+            $un = ($u.UninstallString -replace '"', '')
+            Start-Process $un -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
+          } else {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\BlighterChild\blighter-setup.ps1 -Remove -Yes
+          }
           Start-Sleep -Seconds 15
+          if (Get-ChildItem HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall | Get-ItemProperty | Where-Object { $_.DisplayName -like "Blighter Child*" }) { throw "Settings > Apps entry left" }
+          if (Test-Path "${env:ProgramFiles}\Blighter Child") { throw "Program Files\Blighter Child left" }
+          if (-not (Select-String C:\Squid\etc\squid\squid.conf -Pattern "OTHER-PROGRAM-CONFIG" -Quiet)) { throw "other program's squid.conf not put back" }
+          if (-not (Test-Path C:\ProgramData\Squid-settings-before-Blighter)) { throw "saved Squid settings not kept" }
+          Write-Host "OK: other program's Squid configuration put back"
           & "$env:RUNNER_TEMP\compare.ps1"

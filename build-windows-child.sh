@@ -42,6 +42,7 @@ cp child-windows/blighter-apply.py child-windows/blighter-system.ps1 \
    child-windows/blighter-setup.ps1 child-windows/squid.conf "$STAGE/"
 cp common/domains.py common/blockpage.py "$STAGE/"
 cp LICENSE "$STAGE/LICENSE.txt"
+cp THIRD-PARTY-NOTICES.txt "$STAGE/"
 # Windows command files need CRLF line endings.
 for f in child-windows/*.cmd; do
     sed 's/\r$//; s/$/\r/' "$f" > "$STAGE/$(basename "$f")"
