@@ -14,10 +14,14 @@
 #     Blighter controls internet access only).
 #   * Every other "allow outgoing" firewall rule (Store apps, games, Xbox...)
 #     is switched off; their names are recorded so they can be switched on again.
-#   * Incoming SSH (port 22) is allowed only from the local subnet and only
-#     when Windows calls the network "Private" (set your home Wi-Fi to Private).
+#   * Incoming SSH (port 22) is allowed only from the local subnet or the
+#     recorded home network (HOME_NETS, even with home network access off -
+#     Windows sometimes works out "local subnet" wrongly after a cold start),
+#     and only when Windows calls the network "Private" (set your home Wi-Fi
+#     to Private).
 #   * The child's own proxy setting, Windows' proxy page lock and the Edge,
-#     Chrome and Firefox proxy policies all point at Squid (127.0.0.1:3128).
+#     Chrome, Brave, Vivaldi and Firefox proxy policies all point at Squid
+#     (127.0.0.1:3128).
 #
 # Before the first change, "capture" saves how the laptop was set up
 # (state\pre-install.json: firewall defaults, browser proxy policies, the
@@ -149,10 +153,28 @@ function Set-BlighterRule($r, [string]$direction = "Outbound", [bool]$force = $t
     New-NetFirewallRule @p | Out-Null
 }
 
+function Get-SshAddresses {
+    # Windows' own "local subnet" plus the recorded home subnet(s).
+    return @(@("LocalSubnet") + @($RecordedNets))
+}
+
 function Get-SshRule {
     return @{ Name = "BR-SSH-In"; Display = "Blighter: parent app SSH (home network only)";
               Program = "%SystemRoot%\System32\OpenSSH\sshd.exe"; Protocol = "TCP"; LocalPort = "22";
-              RemoteAddress = "LocalSubnet"; Profile = "Private" }
+              RemoteAddress = (Get-SshAddresses); Profile = "Private" }
+}
+
+function Update-SshAddresses {
+    # Change the addresses in place (no delete / re-create), so the parent
+    # app's open SSH session is not disturbed.
+    $rule = Get-NetFirewallRule -Name "BR-SSH-In" -ErrorAction SilentlyContinue
+    if (-not $rule) { return }
+    $want = @(Get-SshAddresses)
+    $have = @(($rule | Get-NetFirewallAddressFilter).RemoteAddress)
+    if (($have -join ",") -ne ($want -join ",")) {
+        Set-NetFirewallRule -Name "BR-SSH-In" -RemoteAddress $want
+        Write-BLog ("SSH allowed from: " + ($want -join " ") + ".")
+    }
 }
 
 # Speed: Windows has hundreds of firewall rules (322 on a typical Windows 11
@@ -261,9 +283,15 @@ function Disable-Firewall($pre) {
 }
 
 # -------------------------------------------------------------------- proxy ---
+# Chromium-based browsers: the same ProxySettings policy under each one's own
+# key.  (Brave and Vivaldi were added in 1.2.4; on laptops set up earlier
+# pre-install.json has no "before" value for them, so pause / removal simply
+# deletes them.)
 $PolicyKeys = @{
-    "HKLM:\SOFTWARE\Policies\Microsoft\Edge"  = "ProxySettings"
-    "HKLM:\SOFTWARE\Policies\Google\Chrome"   = "ProxySettings"
+    "HKLM:\SOFTWARE\Policies\Microsoft\Edge"         = "ProxySettings"
+    "HKLM:\SOFTWARE\Policies\Google\Chrome"          = "ProxySettings"
+    "HKLM:\SOFTWARE\Policies\BraveSoftware\Brave"    = "ProxySettings"
+    "HKLM:\SOFTWARE\Policies\Vivaldi"                 = "ProxySettings"
 }
 $ProxyJson = '{"ProxyMode":"fixed_servers","ProxyServer":"' + $Proxy + '","ProxyBypassList":"<local>"}'
 $FirefoxKey = "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Proxy"
@@ -518,8 +546,10 @@ function Confirm-Services {
 $conf  = Read-ChildConf
 $voice = $conf.ALLOW_VOICE_UDP -ne "no"
 # Home network subnets, only while the switch is on (checked again by the helper).
+# The recorded home subnets are also used for the SSH rule, switch on or off.
+$RecordedNets = @("$($conf.HOME_NETS)" -split '\s+' | Where-Object { $_ -match '^[0-9a-fA-F:.]+(/\d{1,3})?$' })
 $HomeNets = @()
-if ($conf.HOME_NET_ALLOWED -ne "no") { $HomeNets = @("$($conf.HOME_NETS)" -split '\s+' | Where-Object { $_ -match '^[0-9a-fA-F:.]+(/\d{1,3})?$' }) }
+if ($conf.HOME_NET_ALLOWED -ne "no") { $HomeNets = $RecordedNets }
 
 function Start-Filtering {
     Enable-Firewall $voice
@@ -582,6 +612,8 @@ switch ($Action) {
         try { Confirm-Services } catch { Write-BLog "ERROR (services): $($_.Exception.Message)" }
     }
     { $_ -in "options", "voice" } {
+        # SSH stays on while paused, so its addresses follow the settings now.
+        try { Update-SshAddresses } catch { Write-BLog "ERROR (SSH rule): $($_.Exception.Message)" }
         if (Test-Path $PausedFlag) { Write-BLog "Settings saved; they take effect when filtering is resumed."; return }
         $wanted = @(Get-WantedRules $voice)
         foreach ($n in "BR-Voice", "BR-HomeNet") {

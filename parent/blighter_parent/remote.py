@@ -188,8 +188,10 @@ class Remote:
     def status(self):
         return self._json(["status"])
 
-    def apply(self, mode, allow, block, discord=None, home_net=None):
+    def apply(self, mode, allow, block, discord=None, home_net=None, opera=None):
         data = {"mode": mode, "allow": allow, "block": block}
+        if opera is not None:            # older laptops (before 1.2.4) have no Opera switch
+            data["opera"] = bool(opera)
         if discord is not None:          # older laptops (before 1.2.2) have no Discord switch
             data["discord"] = bool(discord)
         if home_net is not None:         # older laptops (before 1.2.3) have no home network setting

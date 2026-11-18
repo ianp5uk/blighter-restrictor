@@ -5,6 +5,7 @@
 # laptop (the account that is filtered), the admin login created by
 # blighter-setup, its password (saved to the keyring) and the SSH port.
 # "Test connection" logs in and asks the laptop for its status before saving.
+# A second entry for the same laptop (same IP and child username) is refused.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -112,6 +113,10 @@ class ChildDialog(QDialog):
         c = Child(name=name, ip=ip, child_user=cu, admin_user=au, port=self.port.value())
         if self.original:
             c.id = self.original.id
+        dup = self.store.find_duplicate(c)
+        if dup:
+            raise ValueError(f"{dup.name} ({dup.ip}, user {dup.child_user}) is already in the list.  "
+                             "Each child's laptop can only be listed once - edit that entry instead.")
         pw = self.password.text() or (self.store.get_password(self.original) if self.original else "")
         if not pw:
             raise ValueError("Please enter the admin password.")

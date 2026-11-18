@@ -11,6 +11,8 @@
 #                    runner and check it for real (including how long
 #                    "status" takes and the neutral block page): Squid, firewall (direct web access blocked,
 #                    access through Squid allowed, blocked site refused),
+#                    the Opera switch, the SSH rule's addresses, the Brave
+#                    and Vivaldi proxy policies,
 #                    the parent app's SSH connection code against Windows'
 #                    OpenSSH, the self-repair task, pause / resume, then
 #                    removal - checking the laptop's settings afterwards
@@ -183,6 +185,11 @@ jobs:
           if (-not $st.squid_running) { throw "Squid not running" }
           if (-not $st.firewall_active) { throw "firewall not active" }
           if (-not $st.proxy_locked) { throw "proxy policies missing" }
+          foreach ($k in "HKLM:\SOFTWARE\Policies\BraveSoftware\Brave", "HKLM:\SOFTWARE\Policies\Vivaldi") {
+            $v = (Get-ItemProperty -Path $k -Name ProxySettings -ErrorAction SilentlyContinue).ProxySettings
+            if ($v -notmatch "127\.0\.0\.1:3128") { throw "ProxySettings policy missing under $k ($v)" }
+          }
+          Write-Host "OK: Brave and Vivaldi proxy policies set"
           if ($st.child_is_admin -ne $false) { throw "child_is_admin should be false" }
           $direct = $true
           try { Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 15 | Out-Null } catch { $direct = $false }
@@ -223,6 +230,20 @@ jobs:
           Write-Host "discord.com with Discord allowed -> $d"
           if ($d -eq "403" -or $d -eq "000") { throw "Discord still blocked (got $d)" }
           Write-Host "OK: Discord switch blocks and allows"
+          # Opera switch: on by default -> opera.com refused; off -> allowed; back on.
+          if (-not ((& $h get) | ConvertFrom-Json).opera) { throw "Opera downloads should be blocked by default" }
+          $d = (& curl.exe -s -o NUL -w "%{http_code}" -x http://127.0.0.1:3128 http://www.opera.com/)
+          Write-Host "opera.com with Opera blocked -> $d"
+          if ($d -ne "403") { throw "Opera not blocked (got $d)" }
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"opera":false}' | & $h set | ConvertFrom-Json
+          Write-Host "set opera=false: $($r.message)"
+          if (-not $r.ok -or $r.opera) { throw "Opera switch off failed" }
+          $d = (& curl.exe -s -o NUL -w "%{http_code}" -x http://127.0.0.1:3128 http://www.opera.com/)
+          Write-Host "opera.com with Opera allowed -> $d"
+          if ($d -eq "403" -or $d -eq "000") { throw "Opera still blocked (got $d)" }
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"opera":true}' | & $h set | ConvertFrom-Json
+          if (-not $r.ok -or -not $r.opera) { throw "Opera switch on failed" }
+          Write-Host "OK: Opera switch blocks and allows"
           # Home network: detected at setup (the runner's private network), then
           # switched off, then set to another subnet.
           $ni = & $h netinfo
@@ -234,11 +255,18 @@ jobs:
           Write-Host "home off: $($r.message)"
           if (-not $r.ok -or $r.home_net.allowed) { throw "home network off failed" }
           if (Get-NetFirewallRule -Name BR-HomeNet -ErrorAction SilentlyContinue) { throw "BR-HomeNet still present when off" }
+          # The SSH rule keeps the recorded home subnet even with the switch off.
+          $s = (Get-NetFirewallRule -Name BR-SSH-In | Get-NetFirewallAddressFilter).RemoteAddress -join ","
+          Write-Host "BR-SSH-In remote addresses (home off): $s"
+          if ($s -notmatch "LocalSubnet" -or $s -notmatch "192\.168\.77\.0") { throw "BR-SSH-In addresses wrong with home off: $s" }
           $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"home_net":{"allowed":true,"subnets":["192.168.77.0/24","10.200.0.0/16"],"name":"CI net"}}' | & $h set | ConvertFrom-Json
           Write-Host "home on: $($r.message)"
           $a = (Get-NetFirewallRule -Name BR-HomeNet | Get-NetFirewallAddressFilter).RemoteAddress -join ","
           Write-Host "BR-HomeNet remote addresses: $a"
           if ($a -notmatch "192\.168\.77\.0" -or $a -notmatch "10\.200\.0\.0") { throw "BR-HomeNet addresses wrong: $a" }
+          $s = (Get-NetFirewallRule -Name BR-SSH-In | Get-NetFirewallAddressFilter).RemoteAddress -join ","
+          Write-Host "BR-SSH-In remote addresses (home on): $s"
+          if ($s -notmatch "LocalSubnet" -or $s -notmatch "10\.200\.0\.0") { throw "BR-SSH-In addresses wrong: $s" }
           $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"],"home_net":{"allowed":true,"subnets":["not-a-net"]}}' | & $h set | ConvertFrom-Json
           if ($r.ok) { throw "invalid home subnet was accepted" }
           $st2 = & $h status | ConvertFrom-Json

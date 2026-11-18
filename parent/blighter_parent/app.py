@@ -11,6 +11,8 @@
 # A status bar shows progress and errors, and "Working…" with a moving bar
 # while the app waits for a laptop.  A paused child is shown "- PAUSED" in red.
 # Children with an open SSH session are shown in bold.
+# A laptop listed twice (same IP and child username, from before 1.2.4) is
+# reported at start-up so the extra entry can be removed.
 # Log out: "Log out" button (selected child), File > Log out of all laptops,
 # automatically after 5 minutes without use, and always when the app closes.
 # Text size: View > Larger / Smaller / Normal text (Ctrl +, Ctrl -, Ctrl 0),
@@ -175,6 +177,7 @@ class MainWindow(QMainWindow):
             self.say(f"Keyring not available ({self.store.keyring_error}) - passwords kept for this session only.")
         elif not self.store.children:
             self.say("Add a child to get started.")
+        QTimer.singleShot(0, self._warn_duplicates)
 
     # ---- helpers ------------------------------------------------------------------
     def say(self, msg):
@@ -319,6 +322,17 @@ class MainWindow(QMainWindow):
     def _add_domain(self, which, domain):
         self.say(self.rules.add_domain(which, domain))
         self.tabs.setCurrentWidget(self.rules)
+
+    def _warn_duplicates(self):
+        dups = self.store.duplicates()
+        if not dups:
+            return
+        lines = "\n".join(f"  {c.name} ({c.ip}, user {c.child_user}) - same laptop as {e.name}"
+                          for c, e in dups)
+        QMessageBox.warning(self, "Laptop listed more than once",
+                            "These entries are for a laptop that is already in the list:\n\n"
+                            f"{lines}\n\nTwo entries for one laptop confuse each other.  Select the "
+                            "extra entry and press Remove (this changes nothing on the laptop).")
 
     # ---- actions -------------------------------------------------------------------
     def add_child(self):

@@ -95,6 +95,28 @@ class Store:
             self.children.append(child)
         self.save()
 
+    def find_duplicate(self, child):
+        """Another entry for the same laptop: same IP and child username
+        (username compared ignoring case, as Windows does).  Each child laptop
+        may be listed only once - two entries for one laptop each kept their
+        own connection and state and confused each other."""
+        for c in self.children:
+            if (c.id != child.id and c.ip.strip() == child.ip.strip()
+                    and c.child_user.strip().lower() == child.child_user.strip().lower()):
+                return c
+        return None
+
+    def duplicates(self):
+        """[(entry, earlier entry for the same laptop)] in the saved list."""
+        found = []
+        for i, c in enumerate(self.children):
+            for earlier in self.children[:i]:
+                if (earlier.ip.strip() == c.ip.strip()
+                        and earlier.child_user.strip().lower() == c.child_user.strip().lower()):
+                    found.append((c, earlier))
+                    break
+        return found
+
     def remove(self, child):
         self.children = [c for c in self.children if c.id != child.id]
         self.delete_password(child)

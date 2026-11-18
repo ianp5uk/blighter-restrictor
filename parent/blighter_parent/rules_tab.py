@@ -15,7 +15,11 @@
 # "Allow home network access" (with the home network's subnet(s)) lets the
 # laptop reach printers, NAS drives and other home devices: Blighter controls
 # internet access only.  "Use current network" asks the laptop which network
-# it is on now.  Both switches are applied with the lists.
+# it is on now.  "Block Opera downloads" (on by default) stops Opera being
+# downloaded: its built-in VPN can't be switched off by policy.  All three
+# switches are applied with the lists.  Until the laptop has answered, their
+# hover text says so (it only says "update" if the laptop answered without
+# that setting).
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -44,6 +48,14 @@ HELP = ("One domain per line.  <b>.example.com</b> = the site and all its subdom
 DISCORD_TIP = ("Discord is controlled here, not by the lists.  Takes effect when you "
                "press 'Apply to laptop'.")
 DISCORD_OLD_TIP = "This laptop's Blighter child version has no Discord switch - update it to 1.2.2 or later."
+OPERA_TIP = ("Blocks opera.com and Opera's download servers, so the Opera browser can't be "
+             "downloaded (Opera's built-in VPN can't be switched off).  An Opera that is already "
+             "installed is not removed.  Takes effect when you press 'Apply to laptop'.")
+OPERA_OLD_TIP = "This laptop's Blighter child version has no Opera switch - update it to 1.2.4 or later."
+HOME_OLD_TIP = ("This laptop's Blighter child version has no home network setting - "
+                "update it to 1.2.3 or later.")
+WAIT_TIP = "Waiting for the laptop to answer…"
+FAIL_TIP = "Couldn't read this laptop's settings - press 'Reload from laptop' to try again."
 HOME_TIP = ("Lets the laptop reach the home network directly: printers, NAS drives and other home "
             "devices.  Blighter controls internet access only.  Give the home network's subnet(s), "
             "e.g. 192.168.1.0/24, separated by spaces.")
@@ -56,8 +68,9 @@ class RulesTab(QWidget):
         super().__init__(parent)
         self.remotes = remotes
         self.child = None
-        self.loaded = None  # (mode, allow_text, block_text, discord, home) as last read from the laptop
+        self.loaded = None  # (mode, allow_text, block_text, discord, home, opera) as last read from the laptop
         self.discord_supported = False
+        self.opera_supported = False
         self.home_supported = False
         self.home_name = self.loaded_home_name = ""
         self.busy = False
@@ -77,6 +90,11 @@ class RulesTab(QWidget):
         self.cb_discord.setToolTip(DISCORD_TIP)
         self.cb_discord.toggled.connect(lambda *_: self._changed())
         mode_row.addWidget(self.cb_discord)
+        mode_row.addSpacing(12)
+        self.cb_opera = QCheckBox("Block Opera downloads")
+        self.cb_opera.setToolTip(OPERA_TIP)
+        self.cb_opera.toggled.connect(lambda *_: self._changed())
+        mode_row.addWidget(self.cb_opera)
         mode_row.addStretch()
         self.dirty_label = QLabel("")
         mode_row.addWidget(self.dirty_label)
@@ -162,7 +180,8 @@ class RulesTab(QWidget):
 
     def _current(self):
         return (self.mode(), self.allow_edit.toPlainText().strip(), self.block_edit.toPlainText().strip(),
-                self.cb_discord.isChecked(), (self.cb_home.isChecked(), " ".join(self.home_edit.text().split())))
+                self.cb_discord.isChecked(), (self.cb_home.isChecked(), " ".join(self.home_edit.text().split())),
+                self.cb_opera.isChecked())
 
     def is_dirty(self):
         return self.loaded is not None and self._current() != self.loaded
@@ -172,6 +191,7 @@ class RulesTab(QWidget):
                   self.btn_reload, self.btn_tidy, self.btn_revert, self.btn_apply):
             w.setEnabled(on)
         self.cb_discord.setEnabled(on and self.discord_supported)
+        self.cb_opera.setEnabled(on and self.opera_supported)
         for w in (self.cb_home, self.home_edit, self.btn_home):
             w.setEnabled(on and self.home_supported)
 
@@ -213,7 +233,14 @@ class RulesTab(QWidget):
             self.issues.addItem("Note: the allow list is empty - every site will be blocked.")
         return not errors
 
-    def _fill(self, mode, allow_lines, block_lines, discord=None, home=None):
+    def _set_tips(self, tip_discord, tip_home, tip_opera):
+        self.cb_discord.setToolTip(tip_discord)
+        self.cb_opera.setToolTip(tip_opera)
+        for w in (self.cb_home, self.home_edit, self.btn_home):
+            w.setToolTip(tip_home)
+
+    def _fill(self, mode, allow_lines, block_lines, discord=None, home=None, opera=None, answered=True):
+        """Show settings.  answered=False: the laptop hasn't replied yet (blank tab)."""
         for e in (self.block_edit, self.allow_edit):
             e.blockSignals(True)
         self.allow_edit.setPlainText("\n".join(allow_lines).strip())
@@ -225,7 +252,10 @@ class RulesTab(QWidget):
         self.cb_discord.blockSignals(True)
         self.cb_discord.setChecked(bool(discord) if discord is not None else True)
         self.cb_discord.blockSignals(False)
-        self.cb_discord.setToolTip(DISCORD_TIP if self.discord_supported else DISCORD_OLD_TIP)
+        self.opera_supported = opera is not None
+        self.cb_opera.blockSignals(True)
+        self.cb_opera.setChecked(bool(opera) if opera is not None else True)
+        self.cb_opera.blockSignals(False)
         self.home_supported = home is not None
         for w in (self.cb_home, self.home_edit):
             w.blockSignals(True)
@@ -235,10 +265,12 @@ class RulesTab(QWidget):
             w.blockSignals(False)
         self.home_name = self.loaded_home_name = (home or {}).get("name", "")
         self._home_label()
-        tip = HOME_TIP if self.home_supported else ("This laptop's Blighter child version has no home "
-                                                    "network setting - update it to 1.2.3 or later.")
-        for w in (self.cb_home, self.home_edit, self.btn_home):
-            w.setToolTip(tip)
+        if answered:
+            self._set_tips(DISCORD_TIP if self.discord_supported else DISCORD_OLD_TIP,
+                           HOME_TIP if self.home_supported else HOME_OLD_TIP,
+                           OPERA_TIP if self.opera_supported else OPERA_OLD_TIP)
+        else:
+            self._set_tips(WAIT_TIP, WAIT_TIP, WAIT_TIP)
         self.loaded = self._current()
         self._changed()
 
@@ -246,7 +278,7 @@ class RulesTab(QWidget):
     def set_child(self, child):
         self.child = child
         self.loaded = None
-        self._fill(domains.MODE_BLOCKLIST, [], [])
+        self._fill(domains.MODE_BLOCKLIST, [], [], answered=False)
         self.loaded = None
         self._set_enabled(False)
         if child:
@@ -264,7 +296,7 @@ class RulesTab(QWidget):
             if child is not self.child:
                 return
             self._fill(data.get("mode"), data.get("allow", []), data.get("block", []), data.get("discord"),
-                       data.get("home_net"))
+                       data.get("home_net"), data.get("opera"))
             self._set_enabled(True)
             self.status.emit(f"Rules loaded from {child.name}'s laptop.")
 
@@ -274,6 +306,8 @@ class RulesTab(QWidget):
             if child is self.child:
                 self.issues.clear()
                 self.issues.addItem("ERROR " + msg)
+                if self.loaded is None:
+                    self._set_tips(FAIL_TIP, FAIL_TIP, FAIL_TIP)
 
         run_bg(lambda: self.remotes.get(child).get(), ok, err)
 
@@ -287,11 +321,12 @@ class RulesTab(QWidget):
 
     def revert(self):
         if self.loaded:
-            mode, allow, block, discord, (h_on, h_nets) = self.loaded
+            mode, allow, block, discord, (h_on, h_nets), opera = self.loaded
             self._fill(mode, allow.splitlines(), block.splitlines(),
                        discord if self.discord_supported else None,
                        {"allowed": h_on, "subnets": h_nets.split(), "name": self.loaded_home_name}
-                       if self.home_supported else None)
+                       if self.home_supported else None,
+                       opera if self.opera_supported else None)
 
     def add_domain(self, which, domain):
         """Called from the Activity tab: which is 'allow' or 'block'."""
@@ -315,6 +350,7 @@ class RulesTab(QWidget):
         block = self.block_edit.toPlainText().splitlines()
         mode = self.mode()
         discord = self.cb_discord.isChecked() if self.discord_supported else None
+        opera = self.cb_opera.isChecked() if self.opera_supported else None
         home = None
         if self.home_supported:
             home = {"allowed": self.cb_home.isChecked(),
@@ -330,7 +366,8 @@ class RulesTab(QWidget):
             if res.get("ok"):
                 if child is self.child:
                     self._fill(res.get("mode"), res.get("allow", []), res.get("block", []),
-                               res.get("discord", discord), res.get("home_net", home))
+                               res.get("discord", discord), res.get("home_net", home),
+                               res.get("opera", opera))
                     for w in res.get("warnings", []):
                         self.issues.addItem("Squid: " + w)
                 self.status.emit(f"{child.name}: {res.get('message')}")
@@ -345,7 +382,7 @@ class RulesTab(QWidget):
             QMessageBox.critical(self, "Could not apply", msg)
             self.status.emit(msg)
 
-        run_bg(lambda: self.remotes.get(child).apply(mode, allow, block, discord, home), ok, err)
+        run_bg(lambda: self.remotes.get(child).apply(mode, allow, block, discord, home, opera), ok, err)
 
     def _home_label(self):
         self.home_label.setText(f"({self.home_name})" if self.home_name else "")

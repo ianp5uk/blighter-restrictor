@@ -21,6 +21,8 @@
 # ("Allow Discord"): DISCORD_DOMAINS, is_discord() and discord_rules() below
 # are used by the parent app (to warn about Discord lines in a list) and by
 # both child helpers (to write the Squid rules).
+# Opera downloads are blocked by a per-child switch too ("Block Opera
+# downloads", on by default): OPERA_DOMAINS and opera_rules() below.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -190,6 +192,23 @@ def discord_rules(allowed):
     if allowed:
         return "# Discord: allowed (Discord switch)\n" + acl + "http_access allow localhost blighter_discord\n"
     return "# Discord: blocked (Discord switch)\n" + acl + "http_access deny blighter_discord\n"
+
+
+# ---- Opera download block ------------------------------------------------------
+# Opera reads no Windows policies, so its free built-in VPN can't be switched
+# off; stopping Opera being downloaded is the proportionate measure.  Its
+# installers come from get.geo.opera.com and downloadN.operacdn.com.
+OPERA_DOMAINS = (".opera.com", ".operacdn.com")
+
+
+def opera_rules(blocked):
+    """Squid lines for the Opera switch.  Like Discord's they come BEFORE the
+    mode rules, so the switch wins over both lists."""
+    if not blocked:
+        return "# Opera downloads: allowed (Opera switch off)\n"
+    return ("# Opera downloads: blocked (Opera switch)\n"
+            "acl blighter_opera dstdomain " + " ".join(OPERA_DOMAINS) + "\n"
+            "http_access deny blighter_opera\n")
 
 
 # ---- Home network ----------------------------------------------------------------

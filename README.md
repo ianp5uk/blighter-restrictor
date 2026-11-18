@@ -5,7 +5,7 @@ component (Ubuntu or Windows laptops), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.2.3
+# Blighter Restrictor 1.2.4
 
 Monitor and restrict your children's web access on their Ubuntu 26.04 or
 Windows 10/11 laptops.
@@ -59,6 +59,13 @@ read the activity log.
   that UDP range is open to **any** program, so a child who is an
   administrator could run a VPN on a port in that range. For tight control,
   make the child a standard user, or switch Discord off.
+* **Opera downloads are blocked** by default (*Block Opera downloads*, Rules
+  tab). Opera has a free built-in VPN that can't be switched off, so Squid
+  refuses opera.com and Opera's download servers. An Opera that's already
+  installed isn't removed. Switch it off per child if you want Opera.
+* **VPNs that need a paid subscription** (for example Brave's) are not
+  specially blocked. Blighter assumes a parent who pays for one has chosen
+  to let the child use it.
 
 ## 1. Set up each child's laptop
 
@@ -66,7 +73,7 @@ Do this as an administrator on the child's laptop. The child's own account
 must **not** be an administrator.
 
 ```bash
-sudo apt install ./blighter-child_1.2.3_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.2.4_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
@@ -89,7 +96,7 @@ Notes:
 * Discord is allowed by default; switch it off or on in the parent app (Rules
   tab, *Allow Discord*), or with `sudo blighter-setup <child> --no-discord`.
   Running setup again keeps the earlier choice.
-* Upgrading from an earlier version (`sudo apt install ./blighter-child_1.2.3_all.deb`)
+* Upgrading from an earlier version (`sudo apt install ./blighter-child_1.2.4_all.deb`)
   rewrites the Squid rules with the new settings (neutral error page, Discord
   switch) and keeps the lists. To record the home network on a laptop set up
   before 1.2.3, press *Use current network* in the Rules tab, then *Apply*
@@ -101,7 +108,7 @@ Notes:
 Use 64-bit Windows 10 or 11 (Home or Pro). Sign in to a **parent
 administrator account** on the laptop, not the child's.
 
-1. Copy `blighter-child-windows-1.2.3.zip` to the laptop and **unzip it**
+1. Copy `blighter-child-windows-1.2.4.zip` to the laptop and **unzip it**
    (right-click → *Extract All*). Don't run it from inside the zip.
 2. Double-click **Install Blighter Child.cmd** and accept the Windows prompt.
 3. Setup says first that it takes **15-30 minutes** and lists the slow steps,
@@ -145,10 +152,12 @@ Setup then:
   NAS...) can go out. All other "allow
   outgoing" rules (Store apps, Xbox, games) are switched off, and their names
   are recorded so removal can switch them back on.
-* allows incoming SSH only from the local network, and only while Windows
+* allows incoming SSH only from the local network or the recorded home
+  network (even with home network access off), and only while Windows
   calls the network **Private**. If the home Wi-Fi is set to *Public*, setup
   offers to change it.
-* points the child's proxy setting, and the Edge, Chrome and Firefox proxy
+* points the child's proxy setting, and the Edge, Chrome, Brave, Vivaldi and
+  Firefox proxy
   policies, at Squid (127.0.0.1:3128), and greys out Windows' proxy page
 * adds a scheduled task, **Blighter Restrictor\Enforce**. As SYSTEM, at start-up,
   at every log-on and every 10 minutes, it repairs the firewall and proxy
@@ -166,6 +175,11 @@ keep) a separate parent administrator account, sign in to it, then in
 user*.
 
 Notes for Windows:
+* If the parent app can't connect (it times out) although the laptop is on
+  and on the home Wi-Fi, turn the laptop's Wi-Fi off and on, then try again.
+  Windows occasionally works out its "local network" wrongly after a cold
+  start; since 1.2.4 SSH is also allowed from the recorded home network, so
+  this should be rare.
 * Discord (desktop app) uses Windows' proxy setting for text. Voice and video
   use the UDP exception. Both follow the *Allow Discord* switch in the
   parent app's Rules tab (setup asks for the starting value; `-NoVoice`
@@ -203,17 +217,20 @@ Notes for Windows:
 
 ## 2. Install the parent app
 
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.3_all.deb`, then start
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.4_all.deb`, then start
 *Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
 
-**Windows:** run `BlighterRestrictor-Setup-1.2.3.exe` (see "Building for
+**Windows:** run `BlighterRestrictor-Setup-1.2.4.exe` (see "Building for
 Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
 click *More info → Run anyway*.
 
 ## 3. Using the app
 
 * **Add** a child: name, laptop IPv4 address, the child's username (as given to
-  the setup), admin login `blighter` and its password. *Test connection*
+  the setup), admin login `blighter` and its password. Each laptop can be
+  listed only once (same IP address and child username); a laptop already
+  listed twice is pointed out when the app starts, so you can remove the
+  extra entry. *Test connection*
   checks it, says whether the laptop is Ubuntu or Windows (it's recognised
   automatically), and warns if the child is an administrator. Passwords are kept in the system keyring (GNOME Keyring /
   Windows Credential Manager).
@@ -227,7 +244,9 @@ click *More info → Run anyway*.
     child, whatever the lists say. Discord lines typed into a list are
     pointed out, because they have no effect. Laptops with a child version
     older than 1.2.2 show the switch greyed out.
-  * **Apply to laptop** sends the lists and the Discord switch. The laptop
+  * **Block Opera downloads** (next to Allow Discord, on by default) stops
+    Opera being downloaded. Laptops older than 1.2.4 show it greyed out.
+  * **Apply to laptop** sends the lists and the switches. The laptop
     checks them with Squid and reloads it. If Squid rejects them, the
     previous rules are restored automatically.
 * **Activity tab:** the laptop's Squid log, newest first, with filters (time,
@@ -240,7 +259,7 @@ click *More info → Run anyway*.
   to find and allow them.
 * **Allow home network access** (Rules tab, under the mode) switches the
   home network on or off for that laptop and shows its subnet(s), e.g.
-  `192.168.18.0/24 (Intercept3a)`. *Use current network* asks the laptop
+  `192.168.1.0/24 (Home Wi-Fi)`. *Use current network* asks the laptop
   which network it's on now. Applied with *Apply to laptop*.
 * **Laptop tab:** what is actually in force on the laptop, read back from it:
   health checks (system, filtered user, whether the child is an
@@ -319,7 +338,7 @@ on a Windows 10/11 PC instead:
    ```powershell
    powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
    ```
-4. Result: `dist\BlighterRestrictor-Setup-1.2.3.exe`. Install it on your wife's PC.
+4. Result: `dist\BlighterRestrictor-Setup-1.2.4.exe`. Install it on your wife's PC.
    (Without Inno Setup you get a runnable folder `dist\BlighterRestrictor\` instead.)
 
 ## Licence
