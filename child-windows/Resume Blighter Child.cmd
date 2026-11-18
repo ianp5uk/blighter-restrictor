@@ -6,7 +6,7 @@ rem Purpose: switch filtering back ON after "Pause Blighter Child.cmd":
 rem firewall, proxy settings and the self-repair task are applied again.
 rem Asks for administrator rights first.
 rem
-rem Copyright (C) 2026 Ways Property
+rem Copyright (C) 2026 Ian Packer
 rem SPDX-License-Identifier: GPL-3.0-or-later
 rem This program is free software: you can redistribute it and/or modify it
 rem under the terms of the GNU General Public License as published by the Free

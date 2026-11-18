@@ -9,7 +9,7 @@
 ; texts are installed next to the program.
 ; Built by windows\build_windows.ps1, which passes /DAppVersion=<ver>.
 ;
-; Copyright (C) 2026 Ways Property
+; Copyright (C) 2026 Ian Packer
 ; SPDX-License-Identifier: GPL-3.0-or-later
 ; This program is free software: you can redistribute it and/or modify it
 ; under the terms of the GNU General Public License as published by the Free
@@ -25,7 +25,7 @@
 AppId={{6E7B0B1C-3B7E-4C0B-9E55-B1A6E7A0C001}
 AppName=Blighter Restrictor
 AppVersion={#AppVersion}
-AppPublisher=Ways Property
+AppPublisher=Ian Packer
 DefaultDirName={autopf}\Blighter Restrictor
 DefaultGroupName=Blighter Restrictor
 PrivilegesRequired=lowest

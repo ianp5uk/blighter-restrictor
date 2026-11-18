@@ -5,7 +5,7 @@ source code can be obtained.  The full licence texts are in the "licenses"
 folder; the exact licence files of each Python package in the Windows parent
 app are in its "third-party-licenses" folder.
 
-Blighter Restrictor itself: Copyright (C) 2026 Ways Property, licensed under
+Blighter Restrictor itself: Copyright (C) 2026 Ian Packer, licensed under
 the GNU General Public License version 3 or later (LICENSE.txt).  Source:
 https://github.com/ianp5uk/blighter-restrictor
 

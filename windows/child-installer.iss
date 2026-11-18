@@ -22,7 +22,7 @@
 ; Built by the GitHub workflow:  ISCC /DAppVersion=<ver> windows\child-installer.iss
 ; (dist\blighter-child-package.zip must exist).
 ;
-; Copyright (C) 2026 Ways Property
+; Copyright (C) 2026 Ian Packer
 ; SPDX-License-Identifier: GPL-3.0-or-later
 ; This program is free software: you can redistribute it and/or modify it
 ; under the terms of the GNU General Public License as published by the Free
@@ -40,7 +40,7 @@ AppId={{3C7A9E52-6B1D-4F0E-9A47-B1A6E7A0C002}
 AppName=Blighter Child
 AppVersion={#AppVersion}
 AppVerName=Blighter Child {#AppVersion}
-AppPublisher=Ways Property
+AppPublisher=Ian Packer
 AppPublisherURL=https://github.com/ianp5uk/blighter-restrictor
 AppSupportURL=https://github.com/ianp5uk/blighter-restrictor/issues
 DefaultDirName={commonpf64}\Blighter Child

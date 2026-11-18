@@ -10,7 +10,7 @@ rem UTF-8 input/output, and passes back the helper's exit code.
 rem The path has no spaces so it works the same whether the SSH server's
 rem shell is cmd.exe (the default) or PowerShell.
 rem
-rem Copyright (C) 2026 Ways Property
+rem Copyright (C) 2026 Ian Packer
 rem SPDX-License-Identifier: GPL-3.0-or-later
 rem This program is free software: you can redistribute it and/or modify it
 rem under the terms of the GNU General Public License as published by the Free

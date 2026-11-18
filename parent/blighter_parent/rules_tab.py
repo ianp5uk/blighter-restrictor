@@ -21,7 +21,7 @@
 # hover text says so (it only says "update" if the laptop answered without
 # that setting).
 #
-# Copyright (C) 2026 Ways Property
+# Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This program is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free

@@ -19,7 +19,7 @@
 # Logging out closes the SSH session on the laptop; this happens on request
 # (Log out button / menu), after 5 minutes without use, and when the app closes.
 #
-# Copyright (C) 2026 Ways Property
+# Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This program is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free

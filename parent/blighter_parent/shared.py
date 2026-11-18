@@ -6,7 +6,7 @@
 # windows: comparing usernames (Windows names ignore case) and the warning
 # shown when a child's account is an administrator on their laptop.
 #
-# Copyright (C) 2026 Ways Property
+# Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This program is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free

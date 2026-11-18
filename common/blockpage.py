@@ -21,7 +21,7 @@
 # server is refusing connections"); nothing on the laptop can change that.
 # Shipped in both child packages (Ubuntu and Windows), like domains.py.
 #
-# Copyright (C) 2026 Ways Property
+# Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This program is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free

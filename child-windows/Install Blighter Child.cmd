@@ -7,7 +7,7 @@ rem blighter-setup.ps1 from this unzipped folder.  Run it while signed in
 rem to a PARENT administrator account, not the child's.
 rem To undo everything later, run "Remove Blighter Child.cmd".
 rem
-rem Copyright (C) 2026 Ways Property
+rem Copyright (C) 2026 Ian Packer
 rem SPDX-License-Identifier: GPL-3.0-or-later
 rem This program is free software: you can redistribute it and/or modify it
 rem under the terms of the GNU General Public License as published by the Free

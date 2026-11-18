@@ -9,7 +9,7 @@ rem still connect.  Use it to check whether a problem is caused by Blighter
 rem Restrictor.  Run "Resume Blighter Child.cmd" to switch filtering on again.
 rem Asks for administrator rights first.
 rem
-rem Copyright (C) 2026 Ways Property
+rem Copyright (C) 2026 Ian Packer
 rem SPDX-License-Identifier: GPL-3.0-or-later
 rem This program is free software: you can redistribute it and/or modify it
 rem under the terms of the GNU General Public License as published by the Free

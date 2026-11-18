@@ -355,7 +355,7 @@ on a Windows 10/11 PC instead:
 
 ## Licence
 
-Copyright (C) 2026 Ways Property.
+Copyright (C) 2026 Ian Packer.
 
 Blighter Restrictor is free software, licensed under the **GNU General Public
 License v3.0 or later** (`GPL-3.0-or-later`); the full text is in [LICENSE](LICENSE).
