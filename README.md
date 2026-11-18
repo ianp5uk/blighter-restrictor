@@ -13,6 +13,14 @@ Each child's laptop runs Squid as a local web filter. The parent app (Linux or
 Windows) logs in to each laptop over the home network to change the rules and
 read the activity log.
 
+## Support this project
+
+Blighter Restrictor is free to use. If it helps your family, donations are
+very welcome and help pay for new features and fixes:
+
+* [Ko-fi](https://ko-fi.com/ianp5) - one-off or regular donations, no account needed
+* [GitHub Sponsors](https://github.com/sponsors/ianp5uk) - for GitHub users
+
 ## How it works
 
 ```
@@ -290,7 +298,7 @@ click *More info → Run anyway*.
 
 Settings are stored in `~/.config/blighter-restrictor/` (Linux) or
 `%APPDATA%\BlighterRestrictor\` (Windows). Each PC keeps its own list of
-children and passwords, so on your wife's PC add the children again.
+children and passwords, so on a second parent PC add the children again.
 
 ## Limits
 
@@ -338,7 +346,7 @@ on a Windows 10/11 PC instead:
    ```powershell
    powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
    ```
-4. Result: `dist\BlighterRestrictor-Setup-1.2.4.exe`. Install it on your wife's PC.
+4. Result: `dist\BlighterRestrictor-Setup-1.2.4.exe`. Install it on the parent's Windows PC.
    (Without Inno Setup you get a runnable folder `dist\BlighterRestrictor\` instead.)
 
 ## Licence
