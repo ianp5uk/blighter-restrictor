@@ -205,8 +205,9 @@ jobs:
         run: |
           # Install Diladele's Squid directly, as "another program" would.
           Invoke-WebRequest https://www.diladele.com/pkg/squid/7.8/squid-7.8_amd64.msi -OutFile "$env:RUNNER_TEMP\other.msi" -UseBasicParsing
-          $p = Start-Process msiexec.exe -ArgumentList "/i `"$env:RUNNER_TEMP\other.msi`" /qn /norestart" -Wait -PassThru
+          $p = Start-Process msiexec.exe -ArgumentList "/i `"$env:RUNNER_TEMP\other.msi`" /qn /norestart INSTALLFOLDER=`"C:\Squid\`"" -Wait -PassThru
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "other Squid install failed ($($p.ExitCode))" }
+          Write-Host "msiexec exit $($p.ExitCode); registry InstallDir: $((Get-ItemProperty HKLM:\SOFTWARE\Squid -ErrorAction SilentlyContinue).InstallDir)"
           Add-Content C:\Squid\etc\squid\squid.conf "`n# OTHER-PROGRAM-CONFIG"
           $b = Get-Content "$env:RUNNER_TEMP\before.json" -Raw | ConvertFrom-Json
           $b.squid = $true
