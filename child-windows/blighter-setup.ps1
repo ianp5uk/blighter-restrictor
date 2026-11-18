@@ -669,11 +669,28 @@ if ($root -and $owner -eq "blighter" -and $recorded -eq $SquidSha256) {
         Stop-Service squidsrv -Force -ErrorAction SilentlyContinue
         Get-Process squid -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
-        Copy-IfThere (Join-Path $OurSquidBackup "blighter") (Join-Path $root "etc\squid\blighter")
-        Copy-IfThere (Join-Path $OurSquidBackup "logs") (Join-Path $root "var\log\squid")
+        # Most important first: the configuration removal puts back, then the lists.
         Get-ChildItem $OurSquidBackup -Filter "squid.conf.pre-blighter-*" -File -ErrorAction SilentlyContinue |
             Copy-Item -Destination (Join-Path $root "etc\squid") -Force
-        Write-Host "Blighter's lists, settings and activity log put back."
+        Copy-IfThere (Join-Path $OurSquidBackup "blighter") (Join-Path $root "etc\squid\blighter")
+        Write-Host "Blighter's lists and settings put back."
+        # The activity log is best effort: the old log files usually survive the
+        # Squid uninstall, and one that is in use or protected is left as it is.
+        $logTo = Join-Path $root "var\log\squid"
+        if (-not (Test-Path $logTo)) { New-Item -ItemType Directory -Path $logTo -Force | Out-Null }
+        $logFrom = Join-Path $OurSquidBackup "logs"
+        $logProblems = 0
+        Get-ChildItem $logFrom -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $f = $_
+            $dst = Join-Path $logTo $f.Name
+            $same = (Test-Path $dst) -and ((Get-Item $dst).Length -eq $f.Length)
+            if (-not $same) {
+                try { Copy-Item $f.FullName $dst -Force -ErrorAction Stop }
+                catch { $logProblems++; Write-Host "    Could not put back log file $($f.Name) ($($_.Exception.Message))" }
+            }
+        }
+        if ($logProblems) { Note "Part of the activity log from before the Squid update could not be put back." }
+        else { Write-Host "Activity log kept." }
     } elseif ($owner -eq "other") {
         # So that removal puts the earlier Squid configuration back.
         $old = Join-Path $OtherSquidBackup "etc-squid\squid.conf"
