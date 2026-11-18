@@ -104,7 +104,7 @@ var
 
   Progress: TOutputProgressWizardPage;
   LastError, ResultIp, ResultChild, Notes, LogFile: String;
-  FailedUndo, SquidUpdated, SetupOk: Boolean;
+  FailedUndo, FailedRerun, SquidUpdated, SetupOk: Boolean;
   StepNo: Integer;
 
 function SetEnvironmentVariable(lpName: String; lpValue: String): Boolean;
@@ -221,7 +221,10 @@ begin
     else if StartsWith(R, 'result ip=') then ResultIp := Copy(R, 11, Length(R))
     else if StartsWith(R, 'result child=') then ResultChild := Copy(R, 14, Length(R))
     else if R = 'squid-updated' then SquidUpdated := True
-    else if StartsWith(R, 'failed undo=') then FailedUndo := Copy(R, 13, 1) = '1'
+    else if StartsWith(R, 'failed undo=') then begin
+      FailedUndo := Copy(R, 13, 1) = '1';
+      FailedRerun := Pos('rerun=1', R) > 0;
+    end
     else if R = 'done' then SetupOk := True;
   end
   else if StartsWith(L, 'ERROR: ') then
@@ -510,7 +513,20 @@ begin
   if (Code = 0) and SetupOk then Exit;
 
   if LastError = '' then LastError := 'Setup stopped unexpectedly (code ' + IntToStr(Code) + ').';
-  if FailedUndo then begin
+  if FailedUndo and FailedRerun then begin
+    { Blighter was already working before this run: keeping it is the safe
+      default (undoing would remove the filtering completely). }
+    R := SuppressibleMsgBox('Setup did not finish:' + #13#10#13#10 + LastError + #13#10#13#10 +
+      'Blighter was already installed on this laptop.  Keep it and run this installer again later?  (Recommended.)' + #13#10#13#10 +
+      'Yes - keep Blighter as it is' + #13#10 + 'No - remove Blighter completely',
+      mbError, MB_YESNO, IDYES);
+    if R = IDNO then begin
+      RunScript('-Remove -Yes', 'Removing Blighter...');
+      Result := LastError + #13#10#13#10 + 'Blighter has been removed.  The full log is in ' + LogFile;
+    end else
+      Result := LastError + #13#10#13#10 + 'Blighter was left in place - run this installer again to finish.  The full log is in ' + LogFile;
+  end
+  else if FailedUndo then begin
     R := SuppressibleMsgBox('Setup did not finish:' + #13#10#13#10 + LastError + #13#10#13#10 +
       'Undo the changes made so far?  (Recommended.  This removes Blighter completely and puts the laptop back as it was.)',
       mbError, MB_YESNO, IDYES);

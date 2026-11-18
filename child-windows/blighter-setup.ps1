@@ -420,6 +420,9 @@ try {
 } catch { }
 
 $SetupDone = $false
+# Blighter already installed and working (this is a re-run or an update): if
+# this run fails, the installer suggests keeping it rather than undoing it.
+$WasInstalled = (Test-Path $PreFile) -and -not (Test-Path $Marker)
 try {
 # ------------------------------------------------------ 1. child account ---
 Step 1 "The child's account" "a few seconds"
@@ -594,7 +597,17 @@ if ($root -and $owner -eq "blighter" -and $recorded -eq $SquidSha256) {
             Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
         } @($SquidUrl, $msi) | Out-Null
     } catch {
-        Die "The Squid download failed ($($_.Exception.Message)).  Check your internet connection and run setup again."
+        # On a re-run Blighter's own firewall blocks PowerShell from the
+        # internet; Windows' background download service (BITS) is allowed.
+        $err = $_.Exception.Message
+        try {
+            Write-Host "Direct download blocked ($err) - trying Windows' background download service..."
+            Remove-Item $msi -Force -ErrorAction SilentlyContinue
+            Import-Module BitsTransfer -ErrorAction Stop
+            Start-BitsTransfer -Source $SquidUrl -Destination $msi -ErrorAction Stop
+        } catch {
+            Die "The Squid download failed ($err; $($_.Exception.Message)).  Check your internet connection and run setup again."
+        }
     }
     # 1. It must really be Diladele's file (valid signature).
     $sig = Get-AuthenticodeSignature -FilePath $msi
@@ -807,7 +820,7 @@ $SetupDone = $true
         if (Test-Path $OurSquidBackup) { Write-Host "Blighter's lists and settings are saved in $OurSquidBackup" }
         if ($Gui) {
             # The installer asks whether to undo.
-            Tag ("failed undo={0}" -f [int](Test-Path $PreFile))
+            Tag ("failed undo={0} rerun={1}" -f [int](Test-Path $PreFile), [int]$WasInstalled)
         } elseif (Test-Path $PreFile) {
             $undo = $true
             Write-Host "Undoing removes Blighter Restrictor completely and puts the laptop back as it was"
