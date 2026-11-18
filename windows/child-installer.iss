@@ -127,18 +127,32 @@ begin
   Result := Copy(S, 1, Length(Prefix)) = Prefix;
 end;
 
-{ Unpack the child package to the temporary folder (once). }
+{ Unpack the child package to the temporary folder (once).  Uses Windows'
+  own tar.exe (Windows 10 1803 and later); PowerShell's Expand-Archive is the
+  fallback.  Any output goes to the setup log. }
 function EnsurePackage: Boolean;
 var
   Code: Integer;
+  Zip, Dest: String;
 begin
   if not PkgReady then begin
     ExtractTemporaryFile('blighter-child-package.zip');
-    Exec(PsExe, '-NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''' +
-         ExpandConstant('{tmp}\blighter-child-package.zip') + ''' -DestinationPath ''' +
-         ExpandConstant('{tmp}\pkg') + ''' -Force"', '', SW_HIDE, ewWaitUntilTerminated, Code);
-    ScriptPath := ExpandConstant('{tmp}\pkg\{#PkgDir}\blighter-setup.ps1');
+    Zip := ExpandConstant('{tmp}\blighter-child-package.zip');
+    Dest := ExpandConstant('{tmp}\pkg');
+    ForceDirectories(Dest);
+    ScriptPath := Dest + '\{#PkgDir}\blighter-setup.ps1';
+    if FileExists(ExpandConstant('{sys}\tar.exe')) then begin
+      ExecAndLogOutput(ExpandConstant('{sys}\tar.exe'), '-xf "' + Zip + '" -C "' + Dest + '"',
+                       '', SW_HIDE, ewWaitUntilTerminated, Code, nil);
+      AppendLog('Unpack with tar.exe: exit code ' + IntToStr(Code));
+    end;
+    if not FileExists(ScriptPath) then begin
+      ExecAndLogOutput(PsExe, '-NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''' +
+           Zip + ''' -DestinationPath ''' + Dest + ''' -Force"', '', SW_HIDE, ewWaitUntilTerminated, Code, nil);
+      AppendLog('Unpack with Expand-Archive: exit code ' + IntToStr(Code));
+    end;
     PkgReady := FileExists(ScriptPath);
+    if not PkgReady then AppendLog('Not found after unpacking: ' + ScriptPath);
   end;
   Result := PkgReady;
 end;

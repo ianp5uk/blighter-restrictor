@@ -222,6 +222,7 @@ jobs:
           Write-Host "Setup exit code without /REPLACESQUID: $($p.ExitCode)"
           Get-Content "$env:TEMP\Blighter-Child-Setup.log" -ErrorAction SilentlyContinue | Select-Object -Last 15
           if ($p.ExitCode -eq 0) { throw "setup should have refused to replace another program's Squid" }
+          if (-not (Select-String "$env:TEMP\Blighter-Child-Setup.log" -Pattern "not installed by Blighter" -Quiet)) { throw "setup failed for a different reason" }
           if (Test-Path C:\ProgramData\BlighterChild\state\pre-install.json) { throw "setup changed the laptop although it refused" }
           if (-not (Select-String C:\Squid\etc\squid\squid.conf -Pattern "OTHER-PROGRAM-CONFIG" -Quiet)) { throw "other program's squid.conf was changed" }
           Write-Host "OK: another program's Squid left alone"
