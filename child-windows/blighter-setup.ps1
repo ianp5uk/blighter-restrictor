@@ -589,25 +589,33 @@ if ($root -and $owner -eq "blighter" -and $recorded -eq $SquidSha256) {
 } else {
     Write-Host "Downloading Squid from Diladele..."
     $msi = Join-Path $env:TEMP "squid-blighter.msi"
+    # On a re-run Blighter's own firewall blocks PowerShell from the internet.
+    # Allow it to reach Diladele's download server only, for the download only.
+    $tempRule = "BR-SetupDownload"
+    $fwOn = @(Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object { "$($_.DefaultOutboundAction)" -eq "Block" }).Count -gt 0
     try {
+        if ($fwOn) {
+            $hostName = ([Uri]$SquidUrl).Host
+            $ips = @([Net.Dns]::GetHostAddresses($hostName) | ForEach-Object { $_.IPAddressToString })
+            if ($ips.Count) {
+                New-NetFirewallRule -Name $tempRule -DisplayName "Blighter: setup downloading Squid (temporary)" -Group "Blighter Restrictor" `
+                    -Direction Outbound -Action Allow -Profile Any -Protocol TCP -RemotePort 443 -RemoteAddress $ips `
+                    -Program (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") | Out-Null
+            }
+        }
         Invoke-Slow "downloading Squid" {
             param($url, $file)
-            $ErrorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"
+            $ErrorActionPreference = "Stop"
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
+            # Direct, not through the laptop's proxy setting (Squid would block it).
+            $wc = New-Object Net.WebClient
+            $wc.Proxy = $null
+            $wc.DownloadFile($url, $file)
         } @($SquidUrl, $msi) | Out-Null
     } catch {
-        # On a re-run Blighter's own firewall blocks PowerShell from the
-        # internet; Windows' background download service (BITS) is allowed.
-        $err = $_.Exception.Message
-        try {
-            Write-Host "Direct download blocked ($err) - trying Windows' background download service..."
-            Remove-Item $msi -Force -ErrorAction SilentlyContinue
-            Import-Module BitsTransfer -ErrorAction Stop
-            Start-BitsTransfer -Source $SquidUrl -Destination $msi -ErrorAction Stop
-        } catch {
-            Die "The Squid download failed ($err; $($_.Exception.Message)).  Check your internet connection and run setup again."
-        }
+        Die "The Squid download failed ($($_.Exception.Message)).  Check your internet connection and run setup again."
+    } finally {
+        Remove-NetFirewallRule -Name $tempRule -ErrorAction SilentlyContinue
     }
     # 1. It must really be Diladele's file (valid signature).
     $sig = Get-AuthenticodeSignature -FilePath $msi

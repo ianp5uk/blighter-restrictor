@@ -448,6 +448,7 @@ jobs:
           Write-Host "access.log lines after: $after"
           if ($after -lt $logLines) { throw "activity log not kept" }
           if (Test-Path C:\ProgramData\BlighterChild\backup\squid-blighter) { throw "temporary backup not deleted" }
+          if (Get-NetFirewallRule -Name BR-SetupDownload -ErrorAction SilentlyContinue) { throw "temporary download rule left" }
           $st = & $h status | ConvertFrom-Json
           if (-not $st.squid_running -or -not $st.firewall_active) { throw "not filtering after the re-run" }
           python ci_ssh.py $env:BLIGHTER_ADMIN_PASSWORD
