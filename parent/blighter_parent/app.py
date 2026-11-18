@@ -17,6 +17,7 @@
 # automatically after 5 minutes without use, and always when the app closes.
 # Text size: View > Larger / Smaller / Normal text (Ctrl +, Ctrl -, Ctrl 0),
 # remembered between runs - for high-resolution screens.
+# Look and feel (colours, buttons, cursor, Linux font/check boxes): style.py.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -37,7 +38,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QListWidget,
                                QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
                                QTableView, QTabWidget, QVBoxLayout, QWidget)
 
-from . import APP_NAME, COPYRIGHT, LICENSE_NAME, __version__
+from . import APP_NAME, COPYRIGHT, LICENSE_NAME, __version__, style
 from .activity_tab import ActivityTab
 from .config_store import Store
 from .dialogs import ChildDialog, ask_password
@@ -258,6 +259,7 @@ class MainWindow(QMainWindow):
         f = QFont(app.font())
         f.setPointSizeF(size)
         app.setFont(f)
+        style.apply_stylesheet(app)       # check boxes / buttons follow the text size
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         mono.setPointSizeF(size)
         for w in self.findChildren(QPlainTextEdit):
@@ -434,6 +436,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("blighter-restrictor")
+    style.setup(app)
     win = MainWindow()
     app.aboutToQuit.connect(win.remotes.close_all)
     win.show()
