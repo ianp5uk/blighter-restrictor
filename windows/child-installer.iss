@@ -412,6 +412,10 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+  { Silent installs take their answers from the command line (and the
+    BLIGHTER_ADMIN_PASSWORD variable); the page checks would show message
+    boxes nobody can see. }
+  if WizardSilent then Exit;
   if CurPageID = AccountPage.ID then begin
     if AccountCombo.ItemIndex < 0 then begin
       MsgBox('Please choose the child''s account.', mbError, MB_OK); Result := False;
