@@ -665,6 +665,10 @@ if ($root -and $owner -eq "blighter" -and $recorded -eq $SquidSha256) {
     if (-not $root) { Die "Squid did not install correctly." }
     Remove-SquidExtras
     if ($owner -eq "blighter" -and (Test-Path $OurSquidBackup)) {
+        # The new Squid starts straight away and holds its log files open.
+        Stop-Service squidsrv -Force -ErrorAction SilentlyContinue
+        Get-Process squid -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
         Copy-IfThere (Join-Path $OurSquidBackup "blighter") (Join-Path $root "etc\squid\blighter")
         Copy-IfThere (Join-Path $OurSquidBackup "logs") (Join-Path $root "var\log\squid")
         Get-ChildItem $OurSquidBackup -Filter "squid.conf.pre-blighter-*" -File -ErrorAction SilentlyContinue |
