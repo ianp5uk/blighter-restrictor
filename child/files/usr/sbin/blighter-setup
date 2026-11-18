@@ -8,12 +8,16 @@
 #   2. creates the "blighter" admin account (password login over SSH) that
 #      may run ONLY /usr/sbin/blighter-apply as root
 #   3. makes sure SSH password login works for that account and SSH is on
-#   4. replaces squid.conf with the Blighter one (old file backed up)
+#   4. replaces squid.conf with the Blighter one (old file backed up).  If
+#      Squid looks set up by something else (squid.conf changed from
+#      Ubuntu's original, or extra files in /etc/squid/conf.d), setup stops
+#      before changing anything and asks, unless --replace-squid is given
 #   5. starts the child-only firewall forcing web traffic through Squid
 #   6. sets and locks the desktop proxy to 127.0.0.1:3128
 #   7. adds a proxy-aware Discord launcher if Discord (.deb or snap) is installed
 #
-# Usage:  sudo blighter-setup <child-username> [--no-discord]   (--no-voice also works)
+# Usage:  sudo blighter-setup <child-username> [--no-discord] [--replace-squid]
+#         (--no-voice also works for --no-discord)
 #         sudo blighter-setup --remove [--yes]      undo everything
 #
 # Copyright (C) 2026 Ways Property
@@ -89,13 +93,54 @@ CHILD=${1:-}
 # the parent app can change it later (Rules tab, "Allow Discord").
 VOICE=yes
 if [ -r "$CONF" ] && grep -qE '^\s*ALLOW_VOICE_UDP\s*=\s*"?no' "$CONF"; then VOICE=no; fi
-case "${2:-}" in --no-voice|--no-discord) VOICE=no ;; esac
-[ -n "$CHILD" ] || die "Usage: sudo blighter-setup <child-username> [--no-discord]"
+REPLACE_SQUID=no
+for a in "${@:2}"; do
+    case "$a" in
+        --no-voice|--no-discord) VOICE=no ;;
+        --replace-squid) REPLACE_SQUID=yes ;;
+        *) die "Unknown option '$a'" ;;
+    esac
+done
+[ -n "$CHILD" ] || die "Usage: sudo blighter-setup <child-username> [--no-discord] [--replace-squid]"
 id "$CHILD" >/dev/null 2>&1 || die "User '$CHILD' does not exist on this laptop"
 [ "$CHILD" != "$ADMIN" ] && [ "$CHILD" != root ] || die "'$CHILD' cannot be the child account"
 if id -nG "$CHILD" | tr ' ' '\n' | grep -qxE 'sudo|admin|wheel'; then
     warn "'$CHILD' is an administrator (sudo group) and could undo all of this."
     warn "Remove with:  sudo deluser $CHILD sudo"
+fi
+
+# Squid set up by something else?  Decided here, before anything is changed.
+# Blighter's own (header in squid.conf, or an earlier Blighter backup) and
+# Ubuntu's untouched original are fine.  Prints the reasons, one per line.
+squid_other_use() {
+    [ -f "$SQUID_CONF" ] || return 0
+    head -5 "$SQUID_CONF" | grep -q "Blighter Restrictor" && return 0
+    ls /etc/squid/squid.conf.pre-blighter-* >/dev/null 2>&1 && return 0
+    local orig cur f
+    orig=$(dpkg-query -W -f='${Conffiles}\n' squid 2>/dev/null | awk '$1 == "/etc/squid/squid.conf" {print $2}')
+    cur=$(md5sum "$SQUID_CONF" | awk '{print $1}')
+    if [ -z "$orig" ] || [ "$orig" != "$cur" ]; then
+        echo "  - /etc/squid/squid.conf has been changed from Ubuntu's original"
+    fi
+    for f in /etc/squid/conf.d/*; do
+        [ -e "$f" ] || continue
+        [ "$(basename "$f")" = "debian.conf" ] && continue
+        echo "  - extra Squid settings file: $f"
+    done
+}
+other=$(squid_other_use)
+if [ -n "$other" ] && [ "$REPLACE_SQUID" != yes ]; then
+    warn "Squid (web filter software) on this laptop looks set up by something else:"
+    echo "$other"
+    echo "Blighter replaces Squid's settings with its own, so anything else using"
+    echo "Squid on this laptop would stop working.  The current squid.conf is saved"
+    echo "first and put back if Blighter is removed."
+    if [ -t 0 ]; then
+        read -r -p "Replace Squid's settings? [y/N] " a
+    else
+        a=n
+    fi
+    [[ "$a" =~ ^[Yy] ]] || die "Nothing has been changed.  Run setup again and answer 'y', or add --replace-squid, to continue."
 fi
 
 # ------------------------------------------------------------- 1. config ---

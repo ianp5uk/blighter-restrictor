@@ -109,6 +109,10 @@ Notes:
   switch) and keeps the lists. To record the home network on a laptop set up
   before 1.2.3, press *Use current network* in the Rules tab, then *Apply*
   (or run `sudo blighter-setup <child>` again).
+* If Squid on the laptop already looks set up by something else, setup stops
+  before changing anything and asks whether to replace Squid's settings (add
+  `--replace-squid` to skip the question).  The old `squid.conf` is saved and put
+  back on removal.
 * To undo everything: `sudo blighter-setup --remove` (or `sudo apt remove blighter-child`).
 
 ## 1b. Set up a child's Windows 10/11 laptop

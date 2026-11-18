@@ -2,7 +2,7 @@
 # Purpose: states the GPL-3.0-or-later licence as /usr/share/doc/<package>/copyright.
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Blighter Restrictor
-Upstream-Contact: Ways Property <ways-property@pm.me>
+Upstream-Contact: Ian <ianp5@pm.me>
 
 Files: *
 Copyright: 2026 Ways Property

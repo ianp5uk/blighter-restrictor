@@ -6,6 +6,8 @@
 #   dist/blighter-restrictor_<ver>_all.deb  (parent app with the GUI)
 #   dist/blighter-child_<ver>_all.deb       (installed on each child's laptop)
 # The shared common/domains.py is copied into both so their checks match.
+# Each gets the GPL copyright file and THIRD-PARTY-NOTICES.txt in
+# /usr/share/doc/<package>/.
 # Usage: ./build-debs.sh      (needs dpkg-deb, run on Ubuntu/Debian)
 #
 # Copyright (C) 2026 Ways Property
@@ -35,6 +37,7 @@ install -D -m 644 common/domains.py "$C/usr/lib/blighter-child/domains.py"
 install -D -m 644 common/blockpage.py "$C/usr/lib/blighter-child/blockpage.py"
 chmod 755 "$C/usr/sbin/"*
 mkdir -p "$C/usr/share/doc/blighter-child" && grep -v "^#" packaging-copyright > "$C/usr/share/doc/blighter-child/copyright"
+install -m 644 THIRD-PARTY-NOTICES.txt "$C/usr/share/doc/blighter-child/THIRD-PARTY-NOTICES.txt"
 dpkg-deb --root-owner-group --build "$C" "$OUT/blighter-child_${VER}_all.deb"
 
 # ---- parent package ----------------------------------------------------------
@@ -50,6 +53,7 @@ install -D -m 644 parent/blighter_parent/icon.svg \
 cp -a parent/packaging/DEBIAN "$P/DEBIAN"
 sed -i "s/^Version: .*/Version: $VER/" "$P/DEBIAN/control"
 mkdir -p "$P/usr/share/doc/blighter-restrictor" && grep -v "^#" packaging-copyright > "$P/usr/share/doc/blighter-restrictor/copyright"
+install -m 644 THIRD-PARTY-NOTICES.txt "$P/usr/share/doc/blighter-restrictor/THIRD-PARTY-NOTICES.txt"
 dpkg-deb --root-owner-group --build "$P" "$OUT/blighter-restrictor_${VER}_all.deb"
 
 ls -l "$OUT"

@@ -4,7 +4,7 @@ Section: admin
 Priority: optional
 Architecture: all
 Depends: squid, openssh-server, nftables, dconf-cli, sudo, python3
-Maintainer: Ways Property <ways-property@pm.me>
+Maintainer: Ian <ianp5@pm.me>
 Description: Blighter Restrictor - child laptop component
  Lets the Blighter Restrictor parent app manage web filtering on this
  laptop over the home network.  Installs a restricted root helper, a
