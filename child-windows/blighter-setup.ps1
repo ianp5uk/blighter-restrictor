@@ -80,6 +80,13 @@ param(
     [int]$TestFailAt = 0
 )
 if ($Gui) { $Yes = [switch]$true }
+# If started from PowerShell 7 (pwsh), its module folders are inherited and
+# Windows PowerShell 5.1 then fails to load built-in commands such as Set-Acl.
+# Use only Windows PowerShell's own module folders.
+if ($PSVersionTable.PSEdition -eq "Desktop") {
+    $env:PSModulePath = (Join-Path $env:ProgramFiles "WindowsPowerShell\Modules") + ";" +
+                        (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\Modules")
+}
 
 $ErrorActionPreference = "Stop"
 # Progress bars are hidden (they flash on and off and look like a fault);
