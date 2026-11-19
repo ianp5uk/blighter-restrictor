@@ -7,7 +7,7 @@ build the packages (Linux and Windows).
 
 # Blighter Restrictor 1.2.5
 
-Monitor and restrict your children's web access on their Ubuntu 26.04 or
+Monitor and restrict your children's web access on their Linux or
 Windows 10/11 PCs.
 The parent app (Linux or Windows) logs in to each PC over the home network to
 change the rules and read the activity log. You can block everything and allow a
@@ -127,7 +127,8 @@ will be done if there is sufficient interest.
 ## 1a. Set up a child's Linux PC
 
 Do this as an administrator on the child's PC. The child's own account
-should ideally **not** be an administrator. 
+should ideally **not** be an administrator. The builds targeted Debian
+style Linux and have been tested on Ubuntu 26.04
 
 ```bash
 sudo apt install ./blighter-child_1.2.5_all.deb     # also installs squid, openssh-server, nftables if missing
