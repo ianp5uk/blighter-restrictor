@@ -5,7 +5,7 @@ component (Ubuntu or Windows PCs), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.2.4
+# Blighter Restrictor 1.2.5
 
 Monitor and restrict your children's web access on their Ubuntu 26.04 or
 Windows 10/11 PCs.
@@ -128,7 +128,7 @@ Do this as an administrator on the child's PC. The child's own account
 should ideally **not** be an administrator. 
 
 ```bash
-sudo apt install ./blighter-child_1.2.4_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.2.5_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
