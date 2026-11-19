@@ -1,6 +1,8 @@
 ## Fixes
 * A dialogue box starts small even when the main window has been increased in size by the user and overlaps text/controls.
   The dialogue box and controls should be increased by the same amount as main window.
+* Darken or colour parent title bar. It's pure white on Linux and disappears on a white background. Font also doesn't change
+  with window size.
 
 ## Features
 * Would be good to not need to use static addresses and fixed MAC. Setting this would confuse and worry a non-technical user
