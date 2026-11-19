@@ -92,10 +92,17 @@ suggestions and give feedback. You can report them here:
   to let the child use it.
 
 # Installation
-#### ** You need to allocate an hour to install the apps. **
+#### ** You need to allocate an hour to set this uo. **
 You can install onto the child's PC, either desktop or laptop. It needs an
 x86 or x64 Intel or AMD processor. It has not been run or tested on ARM processors.
 It might just work ARM, I have no idea. It has not been tested on tablets.
+
+For this to work properly, you will need to change network configurations. You
+need to move the child's PC to use a static IP address and fixed hardware MAC
+address. Then your router needs to be switched to use a static address for the
+child's PC. This is because as standard router & PC will change their address, this makes
+it difficult for the app to communicate. If you do not know how to do this, please
+work with your friendly AI; ChatGPT, Google, Claude whatever your preference.
 
 The overall process is; install child components on their PCs while logged on
 with Admin / root rights, install parent component on your PC. It expects both
