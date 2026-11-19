@@ -9,9 +9,10 @@ build the packages (Linux and Windows).
 
 Monitor and restrict your children's web access on their Ubuntu 26.04 or
 Windows 10/11 laptops.
-Each child's laptop runs Squid as a local web filter. The parent app (Linux or
-Windows) logs in to each laptop over the home network to change the rules and
-read the activity log.
+The parent app (Linux or Windows) logs in to each laptop over the home network to
+change the rules and read the activity log. You can block everything and allow a
+few web sites or the oposite, allow all and block a few. You can pause the
+restrictions. 
 
 ## Support this project
 
@@ -20,6 +21,21 @@ very welcome and help pay for new features and fixes:
 
 * [Ko-fi](https://ko-fi.com/ianp5) - one-off or regular donations, no account needed
 * [GitHub Sponsors](https://github.com/sponsors/ianp5uk) - for GitHub users
+
+## IMPORTANT
+
+This application is supplied free of charge and you use it at your own risk. It has
+been subject to automated testing and I am personally using it. That said please
+ensure you have backups of any critical information on your device. You should have
+this regardless. It is designed to operate on closed networks such as behind a home
+router, as such, for convenience, it uses only password security, no MFA etc.
+
+## Problems, feedback & suggestions
+
+I do not promise to respond to everything but please do report problems, make
+suggestions and give feedback. You can report them here:
+
+* [Problems, feedback & suggestions](https://github.com/ianp5uk/blighter-restrictor/issues)
 
 ## How it works
 
@@ -75,10 +91,24 @@ very welcome and help pay for new features and fixes:
   specially blocked. Blighter assumes a parent who pays for one has chosen
   to let the child use it.
 
-## 1. Set up each child's laptop
+# Installation
+#### ** You need to allocate an hour to install the apps. **
+You can install onto the child's PC, either desktop or laptop. It needs an
+x86 or x64 Intel or AMD processor. It has not been run or tested on ARM processors.
+It might just work ARM, I have no idea. It has not been tested on tablets.
+
+The overall process is; install child components on their PCs while logged on
+with Admin / root rights, install parent component on your PC. It expects both
+PC's to be on a home network and able to communicate freely. Privacy & security
+was not designed for public networks as this would make it a pain on home networks
+secured behind the router's firewall. If your child has Admin rights on their PC,
+it is possible they could subvert the restrictions, if they are either highly motivated
+or IT smart. If both you're in for a cat and mouse game!
+
+## 1a. Set up a child's Linux laptop
 
 Do this as an administrator on the child's laptop. The child's own account
-must **not** be an administrator.
+should ideally **not** be an administrator. 
 
 ```bash
 sudo apt install ./blighter-child_1.2.4_all.deb     # also installs squid, openssh-server, nftables if missing
@@ -104,7 +134,7 @@ Notes:
 * Discord is allowed by default; switch it off or on in the parent app (Rules
   tab, *Allow Discord*), or with `sudo blighter-setup <child> --no-discord`.
   Running setup again keeps the earlier choice.
-* Upgrading from an earlier version (`sudo apt install ./blighter-child_1.2.4_all.deb`)
+* Upgrading from an earlier version (`sudo apt install ./blighter-child_1.2.5_all.deb`)
   rewrites the Squid rules with the new settings (neutral error page, Discord
   switch) and keeps the lists. To record the home network on a laptop set up
   before 1.2.3, press *Use current network* in the Rules tab, then *Apply*
@@ -118,14 +148,12 @@ Notes:
 ## 1b. Set up a child's Windows 10/11 laptop
 
 Use 64-bit Windows 10 or 11 (Home or Pro). Sign in to a **parent
-administrator account** on the laptop, not the child's.
+administrator account** on the child's PC, not the child's account.
 
-1. Copy `blighter-child-windows-1.2.4.zip` to the laptop and **unzip it**
-   (right-click → *Extract All*). Don't run it from inside the zip.
-2. Double-click **Install Blighter Child.cmd** and accept the Windows prompt.
-3. Setup says first that it takes **15-30 minutes** and lists the slow steps,
-   then asks *Start now?*. Answer *n* if you don't have time; nothing is changed.
-4. Pick the child's account from the list, say whether to allow Discord, then
+1. Copy `BlighterChild-Setup-1.2.5.exe` to the child's PC.
+2. Double-click the setup exe and follow the directions.
+3. It may take a while on some steps, do not give up unless sure it's failed.
+4. Pick the child's account from the list, then
    choose a password (10+ characters) for the hidden **blighter**
    administrator account. You enter this password in the parent app.
 
