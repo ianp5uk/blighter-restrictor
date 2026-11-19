@@ -14,6 +14,8 @@ change the rules and read the activity log. You can block everything and allow a
 few web sites or the oposite, allow all and block a few. You can pause the
 restrictions. 
 
+![Blighter Restrictor Image](blighter-restrictor.png "Blighter Restrictor")
+
 ## Support this project
 
 Blighter Restrictor is free to use. If it helps your family, donations are
