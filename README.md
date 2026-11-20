@@ -18,7 +18,7 @@ restrictions.
 
 ## Support this project
 
-Blighter Restrictor is free to use. If it helps your family, donations are
+Blighter Restrictor is free to use currently. If it helps your family, donations are
 very welcome and help pay for new features and fixes:
 
 * [Ko-fi](https://ko-fi.com/ianp5) - one-off or regular donations, no account needed
@@ -49,11 +49,11 @@ You can install onto the child's PC. It needs an
 x86 or x64 Intel or AMD processor. It has not been run or tested on ARM processors.
 It might just work on ARM, I have no idea. It has not been tested on tablets.
 
-For this to work properly, you will need to change network configurations. You
-need to move the child's PC to use a static IP address and fixed hardware MAC
-address. Then your router needs to be switched to use a static address for the
-child's PC. This is because as standard router & PC will change their address 
-periodically, this makes it difficult for the app to communicate. If you do not
+For this to work reliably, you will need to change/check network configurations.
+The child's PC should use a static IP address and fixed hardware MAC address.
+Then your router needs to be switched to reserve the static address for the
+child's PC. This is because as standard the router will change the PCs address 
+periodically, which will stop communication between parent & child. If you do not
 know how to do this, please work with your friendly AI; ChatGPT, Google, Claude
 whatever your preference.
 
