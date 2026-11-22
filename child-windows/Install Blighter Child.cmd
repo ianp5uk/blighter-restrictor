@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem Blighter Restrictor - double-click installer for a child's Windows laptop.
+rem Blighter Restrictor - double-click installer for a child's Windows PC.
 rem
 rem Purpose: ask Windows for administrator rights (a UAC prompt) and run
 rem blighter-setup.ps1 from this unzipped folder.  Run it while signed in

@@ -1,10 +1,10 @@
 # -----------------------------------------------------------------------------
 # Blighter Restrictor - Windows firewall, proxy and self-repair.
 #
-# Purpose: make Squid the ONLY way programs on this laptop can reach the web,
+# Purpose: make Squid the ONLY way programs on this PC can reach the web,
 # and keep it that way.  Windows Firewall cannot reliably filter outgoing
 # traffic per user account (as nftables does on Ubuntu), so on Windows the
-# rules apply to the WHOLE LAPTOP - every account on it is filtered.
+# rules apply to the WHOLE PC - every account on it is filtered.
 #
 #   * Outgoing traffic is blocked by default on all network profiles.
 #   * Allowed out: squid.exe (the filter itself), Windows' own services
@@ -23,7 +23,7 @@
 #     Chrome, Brave, Vivaldi and Firefox proxy policies all point at Squid
 #     (127.0.0.1:3128).
 #
-# Before the first change, "capture" saves how the laptop was set up
+# Before the first change, "capture" saves how the PC was set up
 # (state\pre-install.json: firewall defaults, browser proxy policies, the
 # child's own proxy setting, whether OpenSSH / Squid / the blighter account
 # already existed).  "pause" and "disable" put back exactly that.
@@ -33,22 +33,31 @@
 #   enable    apply everything above and create the scheduled tasks
 #   enforce   re-check and repair (run by the "Enforce" task every 10 minutes,
 #             at start-up and at every log-on, as SYSTEM); does nothing while paused
-#   pause     switch filtering off but leave everything installed: firewall,
+#   pause     switch Blighter off but leave everything installed: firewall,
 #             browser policies and the child's proxy back to their "before"
 #             state, self-repair task switched off.  SSH from the home network
-#             keeps working so the parent app can still connect.
+#             keeps working so the parent app can still connect.  Used only
+#             by "Pause Blighter Child.cmd" on the PC itself, for
+#             troubleshooting: activity is NOT recorded while it is on.  (The
+#             parent app's Pause is different - it only makes Squid allow
+#             every site, see blighter-apply.py - so monitoring continues.)
 #   resume    switch filtering back on after "pause"
 #   disable   undo everything this script did (used by blighter-setup.ps1 -Remove)
 #   options   add, change or remove the Discord voice rule (UDP 50000-65535)
 #             and the home network rule to match child.conf (run by
 #             blighter-apply.py when the parent app's switches change; nothing
 #             while paused).  "voice" is the 1.2.2 name for the same thing.
-#   netinfo   JSON list of this laptop's current networks (adapters with a
+#   netinfo   JSON list of this PC's current networks (adapters with a
 #             default route): address, prefix length and network name
+#   repair    check and repair what the parent app needs to connect: the
+#             OpenSSH and Squid services, the SSH firewall rule and (unless
+#             switched off with pause) the rest of the firewall.  Existing SSH
+#             host keys are never replaced; OpenSSH only creates keys that
+#             are missing.  Used by Blighter-Details.cmd.
 #   status    print a JSON summary (used by blighter-apply.py "status")
 #
 # Usage (as administrator):
-#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|pause|resume|disable|options|netinfo|status
+#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|pause|resume|disable|options|netinfo|repair|status
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -58,7 +67,7 @@
 # any later version.  It is distributed WITHOUT ANY WARRANTY; see the
 # LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
-param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "options", "voice", "netinfo", "status")][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "options", "voice", "netinfo", "repair", "status")][string]$Action)
 
 $ErrorActionPreference = "Stop"
 # No progress bars: each firewall cmdlet would otherwise flash one, which is
@@ -178,7 +187,7 @@ function Update-SshAddresses {
 }
 
 # Speed: Windows has hundreds of firewall rules (322 on a typical Windows 11
-# laptop).  Asking for them one at a time takes about a second each, so every
+# PC).  Asking for them one at a time takes about a second each, so every
 # function below reads ALL rules once (Get-AllRules) and works on that list.
 function Get-AllRules {
     # Every rule in the local (persistent) store, as one list.
@@ -284,7 +293,7 @@ function Disable-Firewall($pre) {
 
 # -------------------------------------------------------------------- proxy ---
 # Chromium-based browsers: the same ProxySettings policy under each one's own
-# key.  (Brave and Vivaldi were added in 1.2.4; on laptops set up earlier
+# key.  (Brave and Vivaldi were added in 1.2.4; on PCs set up earlier
 # pre-install.json has no "before" value for them, so pause / removal simply
 # deletes them.)
 $PolicyKeys = @{
@@ -471,7 +480,7 @@ function Save-PreState($conf) {
         child_proxy          = (Get-ChildProxyState $conf.CHILD_SID)
     }
     $state | ConvertTo-Json -Depth 8 | Set-Content -Path $PreFile -Encoding UTF8
-    Write-BLog "Saved the laptop's 'before' state to $PreFile."
+    Write-BLog "Saved the PC's 'before' state to $PreFile."
 }
 
 function Read-PreState {
@@ -636,6 +645,23 @@ switch ($Action) {
         }
         ConvertTo-Json -InputObject @($out) -Compress
     }
+    "repair" {
+        # Each part separately, so one failure does not stop the others.
+        try { Confirm-Services } catch { Write-BLog "ERROR (services): $($_.Exception.Message)" }
+        try {
+            if (Get-NetFirewallRule -Name "BR-SSH-In" -ErrorAction SilentlyContinue) { Update-SshAddresses }
+            else { Set-BlighterRule (Get-SshRule) "Inbound" $true; Write-BLog "SSH firewall rule re-created." }
+            $r = Get-NetFirewallRule -Name "BR-SSH-In" -ErrorAction SilentlyContinue
+            if ($r -and "$($r.Enabled)" -ne "True") { Enable-NetFirewallRule -Name "BR-SSH-In"; Write-BLog "SSH firewall rule switched back on." }
+        } catch { Write-BLog "ERROR (SSH rule): $($_.Exception.Message)" }
+        if (-not (Test-Path $PausedFlag)) {
+            try {
+                $problems = Test-FirewallOk $voice
+                if ($problems.Count) { Write-BLog ("Repairing: " + ($problems -join " | ")); Enable-Firewall $voice $false }
+            } catch { Write-BLog "ERROR (firewall): $($_.Exception.Message)" }
+        }
+        Write-BLog "Connection check finished."
+    }
     "disable" {
         $pre = Read-PreState
         if (-not $pre) { Write-BLog "WARNING: no saved 'before' state - using Windows defaults." }
@@ -651,10 +677,10 @@ switch ($Action) {
         $paused = Test-Path $PausedFlag
         $all = Get-AllRules
         $problems = Test-FirewallOk $voice $all
-        if ($paused) { $problems = @("Filtering is PAUSED since " + (Get-Content $PausedFlag -TotalCount 1)) + $problems }
+        if ($paused) { $problems = @("Blighter is SWITCHED OFF on this PC ('Pause Blighter Child', since " + (Get-Content $PausedFlag -TotalCount 1) + ") - nothing is filtered or recorded") + $problems }
         $warnings = @()
         if (Test-Path $Incomplete) {
-            $warnings += ("Setup on this laptop did not finish (started " + (Get-Content $Incomplete -TotalCount 1) +
+            $warnings += ("Setup on this PC did not finish (started " + (Get-Content $Incomplete -TotalCount 1) +
                           ").  Run 'Install Blighter Child.cmd' again to finish it, or 'Remove Blighter Child.cmd' to undo it.")
         }
         $adminSids = @(Get-AdminSids)

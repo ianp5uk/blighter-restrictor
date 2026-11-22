@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem Blighter Restrictor - resume filtering on a child's Windows laptop.
+rem Blighter Restrictor - resume filtering on a child's Windows PC.
 rem
 rem Purpose: switch filtering back ON after "Pause Blighter Child.cmd":
 rem firewall, proxy settings and the self-repair task are applied again.

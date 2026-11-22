@@ -5,7 +5,7 @@ component (Ubuntu or Windows PCs), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.2.5
+# Blighter Restrictor 1.2.6
 
 Monitor and restrict your children's web access on their Linux or
 Windows 10/11 PCs.
@@ -49,17 +49,18 @@ You can install onto the child's PC. It needs an
 x86 or x64 Intel or AMD processor. It has not been run or tested on ARM processors.
 It might just work on ARM, I have no idea. It has not been tested on tablets.
 
-For this to work reliably, you will need to change/check network configurations.
-The child's PC should use a static IP address and fixed hardware MAC address.
-Then your router needs to be switched to reserve the static address for the
-child's PC. This is because as standard the router will change the PCs address 
-periodically, which will stop communication between parent & child. If you do not
-know how to do this, please work with your friendly AI; ChatGPT, Google, Claude
-whatever your preference.
+You do **not** need to change any router settings, reserve addresses or fix MAC
+addresses. Setup on the child's PC shows its address once; you type it into the
+parent app. If the router later gives the child's PC a different address, the
+parent app finds it again by itself: it recognises the PC by its SSH identity
+(host key), not by its address or MAC address, and only looks on your home
+network.
 
-The overall process is; install child components on their PCs while logged on
-with Admin / root rights, install parent component on your PC. It expects both
-PC's to be on a home network and able to communicate freely. Privacy & security
+The overall process is: **first** install the parent app on your own PC (section
+1), **then** install the child component on each child's PC while logged on with
+Admin / root rights (section 2), then add the child in the parent app with the
+address the child setup showed (section 3). It expects both PCs to be on a home
+network and able to communicate freely. Privacy & security
 was not designed for public networks as this would make it a pain on home networks
 secured behind the router's firewall. If your child has Admin rights on their PC,
 it is possible they could subvert the restrictions, if they are either highly motivated
@@ -124,28 +125,48 @@ will be done if there is sufficient interest.
   to let the child use it.
 
 
-## 1a. Set up a child's Linux PC
+## 1. Install the parent app (first)
+
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.6_all.deb`, then start
+*Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
+
+**Windows:** run `BlighterRestrictor-Setup-1.2.6.exe` (see "Building for
+Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
+click *More info → Run anyway*.
+
+On first start it shows a short *Getting started* note (also under *Help*).
+
+## 2a. Set up a child's Linux PC
 
 Do this as an administrator on the child's PC. The child's own account
 should ideally **not** be an administrator. The builds targeted Debian
 style Linux and have been tested on Ubuntu 26.04
 
 ```bash
-sudo apt install ./blighter-child_1.2.5_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.2.6_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
-Setup asks you to choose a password for the **blighter** admin account (you
-enter it in the parent app). It then:
+The first time, setup asks you to confirm that the parent app is already
+installed on your own PC. It then asks you to choose a password for the
+**blighter** admin account (you enter it in the parent app). It then:
 * saves the existing `/etc/squid/squid.conf` as `squid.conf.pre-blighter-<date>` and installs its own
 * allows SSH password login for the `blighter` account only, and switches SSH on
 * starts the child-only firewall (`blighter-firewall.service`, started at every boot)
 * sets the desktop proxy to 127.0.0.1:3128 and locks it
 * makes the Discord launcher (.deb or snap) use the proxy, if Discord is installed
 
-At the end it prints the PC's IPv4 address. **Reserve that address in your
-router's DHCP settings** so it doesn't change. The child must log out and back
-in once.
+At the end it shows the **address to enter in the parent app** (the PC's
+home-network address), with the child's username and the admin login. Keep the
+PC switched on and on the home network until the parent app has connected. The
+child must log out and back in once.
+
+Later, as a parent on the child's PC:
+* `sudo blighter-setup --details` shows the current address again and checks
+  and repairs the connection (SSH, the sudo rule, the firewall, Squid). The
+  PC's SSH host keys are kept; only missing ones are created.
+* `sudo blighter-setup --password` changes the `blighter` password (then enter
+  the new one in the parent app with *Edit*).
 
 Notes:
 * Discord is allowed by default; switch it off or on in the parent app (Rules
@@ -159,15 +180,17 @@ Notes:
   back on removal.
 * To undo everything: `sudo blighter-setup --remove` (or `sudo apt remove blighter-child`).
 
-## 1b. Set up a child's Windows 10/11 PC
+## 2b. Set up a child's Windows 10/11 PC
 
 Use 64-bit Windows 10 or 11 (Home or Pro). Sign in to a **parent
 administrator account** on the child's PC, not the child's account.
 
-1. Copy `BlighterChild-Setup-1.2.5.exe` to the child's PC.
-2. Double-click the setup exe and follow the directions.
-3. It may take a while on some steps, do not give up unless sure it's failed.
-4. Pick the child's account from the list, then
+1. Install the parent app on your own PC first (section 1). The installer's
+   first page asks you to confirm this.
+2. Copy `BlighterChild-Setup-1.2.6.exe` to the child's PC.
+3. Double-click the setup exe and follow the directions.
+4. It may take a while on some steps, do not give up unless sure it's failed.
+5. Pick the child's account from the list, then
    choose a password (10+ characters) for the hidden **blighter**
    administrator account. You enter this password in the parent app.
 
@@ -245,12 +268,24 @@ Notes for Windows:
   background service can't update while the filter is on. Windows Update,
   Defender and Edge updates still work.
 * Browsers show "managed by your organisation". That's the proxy policy.
+* The Finished page shows the **address to enter in the parent app**, the
+  child's username and the admin login. Setup adds **no Start menu or desktop
+  shortcuts**, so nothing catches the child's eye (the Start menu entries of
+  1.2.5 are removed on update). The parent's tools are in
+  `C:\ProgramData\BlighterChild`.
+* **Blighter-Details.cmd** - to open it press *Windows key + R* and type
+  `C:\ProgramData\BlighterChild\Blighter-Details.cmd`. It shows the
+  current address for the parent app, can check and repair the connection
+  (OpenSSH, Squid, the SSH firewall rule, the network type) and change the
+  `blighter` password. The PC's SSH identity (host keys) is never replaced.
 * **Pause Blighter Child.cmd** (in `C:\ProgramData\BlighterChild`) switches
-  filtering off without uninstalling. The firewall, browser policies and the
-  child's proxy go back to how they were before setup, and the self-repair task
-  is switched off. The parent app can still connect, and its PC tab shows
-  *PAUSED*. Use it to check whether a problem is caused by Blighter Restrictor.
-  **Resume Blighter Child.cmd** switches filtering back on.
+  Blighter **completely** off without uninstalling, for troubleshooting. The
+  firewall, browser policies and the child's proxy go back to how they were
+  before setup, and the self-repair task is switched off, so **no activity is
+  recorded** while it is off. The parent app can still connect; its PC tab
+  says Blighter is switched off on the PC, and its *Resume filtering* switches
+  it back on (as does **Resume Blighter Child.cmd**). This is different from
+  the parent app's *Pause filtering*, which keeps recording.
 * **Remove Blighter Child.cmd** (from the zip or from
   `C:\ProgramData\BlighterChild`) puts the PC back as it was before setup:
   * firewall defaults, the switched-off rules, browser policies and the child's
@@ -268,22 +303,14 @@ Notes for Windows:
   then `Set-NetFirewallProfile -All -DefaultOutboundAction NotConfigured`.
   This restores internet straight away.
 
-## 2. Install the parent app
-
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.5_all.deb`, then start
-*Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
-
-**Windows:** run `BlighterRestrictor-Setup-1.2.5.exe` (see "Building for
-Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
-click *More info → Run anyway*.
-
 ## 3. Using the app
 
-* **Add** a child: name, PC IPv4 address, the child's username (as given to
-  the setup), admin login `blighter` and its password. Each PC can be
-  listed only once (same IP address and child username); a PC already
-  listed twice is pointed out when the app starts, so you can remove the
-  extra entry. *Test connection*
+* **Add** a child: name, the PC address shown at the end of the child setup,
+  the child's username (as given to the setup), admin login `blighter` and its
+  password. The app remembers the PC's SSH identity the first time it
+  connects. Each PC can be listed only once; a PC already listed twice is
+  pointed out when the app starts, so you can remove the extra entry.
+  *Test connection*
   checks it, says whether the PC is Ubuntu or Windows (it's recognised
   automatically), and warns if the child is an administrator. Passwords are kept in the system keyring (GNOME Keyring /
   Windows Credential Manager).
@@ -302,9 +329,30 @@ click *More info → Run anyway*.
   * **Apply to PC** sends the lists and the switches. The PC
     checks them with Squid and reloads it. If Squid rejects them, the
     previous rules are restored automatically.
+* **Finding PCs again:** if a child's PC is not at its last address (the
+  router gave it a new one), the app searches the home network for it - the
+  /24 network of its last address and of your own PC, SSH port only - and
+  checks each answer against the saved SSH identity before sending any
+  password. The new address is saved and the list updated. This happens by
+  itself when connecting, and for PCs shown offline (at most once a minute
+  each).
+* **Reconnect** (under the children list): *Find automatically* searches now;
+  or enter the address shown on the child's PC (*Blighter-Details.cmd* on
+  Windows, `sudo blighter-setup --details` on Ubuntu) and, if it changed, the
+  new password. If the computer at that address has a different identity -
+  after reinstalling Blighter on it, or with a new PC - the app says so and
+  only remembers the new identity when you confirm it is the right PC. The
+  child's name, username and the PC's rules and activity log are not changed.
 * **Activity tab:** the PC's Squid log, newest first, with filters (time,
-  site, blocked only), *Include older logs*, *Live* refresh every 5 seconds,
-  and a *Summary by site* view. **Right-click** a row to add that site, or its
+  site, blocked only) and a *Summary by site* view. Activity is **collected
+  automatically in the background** (every 10 seconds) for every child the app
+  is logged in to - whichever child or tab is shown, and also while filtering
+  is paused - until you log out of that child or close the app. Only new log
+  lines are fetched each time. *First fetch: last N lines* (100 by default)
+  sets how much history is fetched when collection starts; *Load history*
+  (with *Include older logs* if wanted) fetches more and adds it without
+  duplicates. The tab says when the activity was last updated, or that it is
+  out of date if the PC can't be reached (it keeps retrying). **Right-click** a row to add that site, or its
   parent domain, to the Block or Allow list. Then press *Apply to PC* in
   the Rules tab.
   Tip for *Block all, allow some*: sites often need extra domains for images
@@ -321,23 +369,23 @@ click *More info → Run anyway*.
   The settings appear straight away; the health checks follow (a few
   seconds; on Windows up to a minute). *Reload Squid* rewrites the generated
   rules and re-reads the configuration on demand.
-  **Pause filtering** switches filtering off on that PC, and **Resume
-  filtering** switches it back on. Use them to check whether a problem is
-  caused by Blighter Restrictor. While paused the child has **open,
-  unfiltered internet access**: the PC tab shows a red banner and the
-  children list shows "- PAUSED" in red. The app can still connect while
-  paused. (On Windows this is the same as the PC's *Pause / Resume
-  Blighter Child.cmd*. On Ubuntu, Squid lets everything through and the child
-  firewall stands down until Resume, even across restarts.)
+  **Pause filtering** allows every website on that PC, and **Resume
+  filtering** switches the rules back on. While paused the PC tab shows a red
+  banner and the children list shows "- PAUSED" in red. **Activity is still
+  recorded while paused**: web traffic still has to go through Squid (the
+  firewall and proxy settings stay on), Squid just lets everything through.
+  This lasts across restarts until Resume. PCs with a child version older
+  than 1.2.6 stop recording while paused; the app warns before pausing them.
 * While the app waits for a PC, the status bar shows **Working…** with a
   moving bar, and that tab's buttons are greyed out. Windows PCs take a
   few seconds per request; Ubuntu PCs answer almost at once.
 
 * **Logging out:** a child shown in **bold** has an open SSH session to their
-  PC. *Log out* closes it for the selected child, and *File → Log out of
-  all PCs* (Ctrl+L) closes them all. Sessions also close automatically after
-  5 minutes without use (unless *Live* is on) and whenever the app is closed.
-  Any later action logs in again automatically.
+  PC. Selecting a child logs in to their PC and starts collecting their
+  activity. *Log out* closes it for the selected child (and stops collecting
+  their activity), and *File → Log out of all PCs* (Ctrl+L) closes them all.
+  Sessions also close whenever the app is closed. There is no automatic
+  log-out after idle minutes, as that would stop the activity collection.
 * **Text size:** *View → Larger text / Smaller text / Normal text size*
   (Ctrl +, Ctrl −, Ctrl 0), from 80% to 300%. The size is remembered.
 
@@ -356,7 +404,7 @@ children and passwords, so on a second parent PC add the children again.
   can therefore still find out that a filter is in place.
 * DNS (port 53) stays open for the child's account. That's harmless for web
   filtering, which is done on site names by Squid.
-* Windows: a child who is an administrator can undo everything (see 1b).
+* Windows: a child who is an administrator can undo everything (see 2b).
   Booting from USB or reinstalling Windows gets round it too. A BIOS/UEFI
   password and BitLocker close that gap if needed.
 * Windows: the Windows component is checked automatically on GitHub's Windows Server
@@ -387,6 +435,7 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 |---|---|
 | `common/domains.py` | Domain validation and the Discord switch rules, shared by the app and the PC helpers |
 | `common/blockpage.py` | The neutral error page and Squid header settings, shared by both PC helpers |
+| `common/logtail.py` | Reads the activity log a piece at a time (only new lines), shared by both PC helpers |
 | `parent/blighter_parent/` | The GUI app (Qt / PySide6, Paramiko SSH, keyring) |
 | `parent/packaging/` | Ubuntu launcher, menu entry and package control file |
 | `child/files/usr/sbin/blighter-setup` | One-time PC setup / removal |
@@ -397,7 +446,8 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `child-windows/blighter-system.ps1` | Windows whole-PC firewall, proxy policies, self-repair task |
 | `child-windows/blighter-apply.py` / `.cmd` | Windows helper the app runs over SSH (same commands as Ubuntu's) |
 | `child-windows/squid.conf` | Managed Squid configuration for Squid for Windows |
-| `child-windows/*.cmd` | Double-click install / pause / resume / remove |
+| `child-windows/blighter-details.ps1` | Windows: connection details, repair and password change for a parent |
+| `child-windows/*.cmd` | Double-click install / pause / resume / remove / details (Blighter-Details.cmd) |
 | `build-windows-child.sh` | Builds the Windows child zip |
 | `windows/` | Windows build script, installer definition, icon (parent app) |
 | `LICENSE` | GNU General Public License v3.0 |

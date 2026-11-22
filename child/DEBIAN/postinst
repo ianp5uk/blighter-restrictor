@@ -20,7 +20,9 @@ if [ "$1" = "configure" ]; then
         /usr/sbin/blighter-apply reload >/dev/null 2>&1 || true
     else
         echo ""
-        echo "Blighter Restrictor installed.  Finish setup with:"
+        echo "Blighter Restrictor child component installed."
+        echo "Install the Blighter Restrictor app on your OWN PC first if you have"
+        echo "not already, then finish setup here with:"
         echo "    sudo blighter-setup <child-username>"
         echo ""
     fi

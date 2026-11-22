@@ -4,7 +4,7 @@
 # (where the build copies it into this package) or straight from the source
 # tree (where it lives in ../../common).  Also holds helpers used by several
 # windows: comparing usernames (Windows names ignore case) and the warning
-# shown when a child's account is an administrator on their laptop.
+# shown when a child's account is an administrator on their PC.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -31,15 +31,15 @@ def same_user(a, b, platform=None):
     return a.lower() == b.lower() if platform == "windows" else a == b
 
 
-ADMIN_WARNING = ("The child's account is an ADMINISTRATOR on this laptop, so they can "
+ADMIN_WARNING = ("The child's account is an ADMINISTRATOR on this PC, so they can "
                  "switch off the filter, firewall or this app's access.  Filtering still "
                  "works, but it cannot stop an administrator who goes looking.  Fix: give "
-                 "yourself a separate administrator account on the laptop and make the "
+                 "yourself a separate administrator account on the PC and make the "
                  "child a Standard user.")
 
 
 def admin_warning_html(status):
-    """Red warning (HTML) if the laptop reports the child as an administrator."""
+    """Red warning (HTML) if the PC reports the child as an administrator."""
     if status.get("child_is_admin"):
         return f"<br><span style='color:#c0392b'><b>Warning:</b> {ADMIN_WARNING}</span>"
     return ""

@@ -2,7 +2,7 @@
 # Blighter Restrictor - the neutral "This site isn't available" page.
 #
 # Purpose: stop Squid announcing itself to the child.  Squid's own error
-# pages name Squid, its version and the laptop, which invites a curious
+# pages name Squid, its version and the PC, which invites a curious
 # child to start investigating.  This module:
 #   * writes ONE plain page under the name of every Squid error page
 #     (ERR_ACCESS_DENIED, ERR_DNS_FAIL, ...) into a Blighter folder, so a
@@ -12,13 +12,13 @@
 #     own reply headers (Server, X-Squid-Error, X-Cache, Via, ...).
 #     ("via off" would do the same for Via but makes every "squid -k parse"
 #     print a warning, which the parent app would then show.).
-# The lines go into the generated rules.conf, so an existing laptop picks
+# The lines go into the generated rules.conf, so an existing PC picks
 # them up the next time its rules are written - squid.conf itself does not
 # have to be replaced.
 # Squid 7 looks deny_info pages up by name only (not by path), so replacing
 # the whole error folder is the supported way to change them.
 # Secure (https) sites show the BROWSER's own error instead (e.g. "The proxy
-# server is refusing connections"); nothing on the laptop can change that.
+# server is refusing connections"); nothing on the PC can change that.
 # Shipped in both child packages (Ubuntu and Windows), like domains.py.
 #
 # Copyright (C) 2026 Ian Packer

@@ -1,12 +1,14 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem Blighter Restrictor - pause filtering on a child's Windows laptop.
+rem Blighter Restrictor - pause filtering on a child's Windows PC.
 rem
-rem Purpose: switch filtering OFF without uninstalling: the firewall,
-rem browser policies and the child's proxy go back to how they were before
-rem setup, and the self-repair task is switched off.  The parent app can
-rem still connect.  Use it to check whether a problem is caused by Blighter
-rem Restrictor.  Run "Resume Blighter Child.cmd" to switch filtering on again.
+rem Purpose: switch Blighter OFF without uninstalling, for troubleshooting:
+rem the firewall, browser policies and the child's proxy go back to how they
+rem were before setup, and the self-repair task is switched off.  Activity is
+rem NOT recorded while it is off.  The parent app can still connect, and its
+rem "Resume filtering" (or "Resume Blighter Child.cmd") switches it on again.
+rem (The parent app's own Pause is different: it allows every site but keeps
+rem recording activity.)
 rem Asks for administrator rights first.
 rem
 rem Copyright (C) 2026 Ian Packer

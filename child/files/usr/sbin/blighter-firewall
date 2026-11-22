@@ -5,13 +5,15 @@
 # Purpose: make Squid the ONLY way the child's account can reach the web.
 # Rules apply only to processes owned by the child's user (from
 # /etc/blighter/child.conf).  For that user, outgoing traffic is allowed to:
-#   - this laptop (loopback) - which is where Squid listens
+#   - this PC (loopback) - which is where Squid listens
 #   - DNS (port 53) and ping
 #   - UDP 50000-65535 when ALLOW_VOICE_UDP=yes (Discord voice/video)
 #   - the home network (HOME_NETS) when HOME_NET_ALLOWED=yes - printers, NAS
 #     drives and so on; Blighter controls internet access only
-# While /etc/blighter/paused exists (Pause in the parent app) "start" removes
-# the rules instead, so filtering stays off across restarts until Resume.
+# The rules stay on while filtering is paused (/etc/blighter/paused, Pause
+# in the parent app): Squid then allows every site, but web traffic still
+# has to go through it, so activity is still recorded.  (Before 1.2.6 the
+# rules were removed while paused, which stopped monitoring too.)
 # Everything else (direct web access, QUIC, game servers, VPNs...) is
 # rejected.  Squid itself runs as the "proxy" user, so it is unaffected.
 # Uses its own table "inet blighter" so it never touches other firewall rules.
@@ -28,17 +30,11 @@
 # -----------------------------------------------------------------------------
 set -euo pipefail
 CONF=/etc/blighter/child.conf
-PAUSED=/etc/blighter/paused
 
 start() {
     [ -r "$CONF" ] || { echo "Missing $CONF - run blighter-setup first" >&2; exit 1; }
     # shellcheck disable=SC1090
     . "$CONF"
-    if [ -e "$PAUSED" ]; then
-        stop
-        echo "Blighter filtering is PAUSED - firewall not applied"
-        return 0
-    fi
     CHILD_UID=$(id -u "$CHILD_USER")
     VOICE=""
     if [ "${ALLOW_VOICE_UDP:-yes}" = "yes" ]; then
@@ -63,7 +59,7 @@ table inet blighter {
     chain output {
         type filter hook output priority filter; policy accept;
         meta skuid != $CHILD_UID accept
-        oifname "lo" accept comment "Squid on this laptop"
+        oifname "lo" accept comment "Squid on this PC"
         meta l4proto { icmp, ipv6-icmp } accept
         udp dport 53 accept
         tcp dport 53 accept

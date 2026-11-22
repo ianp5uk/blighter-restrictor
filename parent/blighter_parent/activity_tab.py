@@ -1,13 +1,18 @@
 # -----------------------------------------------------------------------------
 # Blighter Restrictor - "Activity" tab.
 #
-# Purpose: download a child's Squid access log over SSH and show it as a
+# Purpose: show a child's web activity (their PC's Squid access log) as a
 # searchable table (newest first) plus a per-site summary.  Filters: time
-# range, text search, blocked-only.  "Live" refreshes every 5 seconds.
+# range, text search, blocked-only.
+# The activity itself is collected in the background by collector.py, all
+# the time the app is logged in to that child's PC - whichever tab is open,
+# and also while filtering is paused.  This tab only shows it, and says when
+# it was last updated, or that it is out of date if the PC cannot be
+# reached (the app keeps retrying).  "First fetch: last N lines" (100 by
+# default) only limits the history fetched when collection starts; "Load
+# history" fetches more and adds it without duplicates.
 # Right-click a row to add the site (or its parent domain) to the allow or
 # block list in the Rules tab.
-# While a download runs, Refresh and the download options are greyed out
-# (Live refreshes run quietly in the background).
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -21,15 +26,15 @@
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMenu, QPushButton, QSpinBox,
                                QTableView, QTabWidget, QVBoxLayout, QWidget)
 
 from . import accesslog
+from .collector import DEFAULT_LINES, POLL_SECONDS
 from .shared import domains
-from .workers import run_bg
 
 RANGES = [("Last hour", 3600), ("Last 24 hours", 86400), ("Today", "today"),
           ("Last 7 days", 7 * 86400), ("Everything loaded", None)]
@@ -82,18 +87,21 @@ class ActivityTab(QWidget):
     status = Signal(str)
     add_domain = Signal(str, str)  # which ("allow"/"block"), domain
 
-    def __init__(self, remotes, parent=None):
+    def __init__(self, collector, parent=None):
         super().__init__(parent)
-        self.remotes = remotes
+        self.collector = collector
         self.child = None
         self.entries = []
-        self.busy = False
 
         self.lines = QSpinBox()
         self.lines.setRange(100, 100000)
-        self.lines.setSingleStep(1000)
-        self.lines.setValue(5000)
+        self.lines.setSingleStep(100)
+        self.lines.setValue(DEFAULT_LINES)
+        self.lines.setToolTip("How much history to fetch when collection starts, or with Load history.  "
+                              "Everything after that is collected as it happens.")
+        self.lines.valueChanged.connect(lambda v: setattr(self.collector, "initial_lines", v))
         self.rotated = QCheckBox("Include older logs")
+        self.rotated.toggled.connect(lambda on: setattr(self.collector, "include_rotated", on))
         self.range = QComboBox()
         for label, _ in RANGES:
             self.range.addItem(label)
@@ -102,22 +110,23 @@ class ActivityTab(QWidget):
         self.search.setPlaceholderText("Filter by site…")
         self.search.setClearButtonEnabled(True)
         self.blocked_only = QCheckBox("Blocked only")
-        self.live = QCheckBox("Live (every 5 s)")
-        self.btn_refresh = QPushButton("Refresh")
+        self.btn_refresh = QPushButton("Load history")
+        self.btn_refresh.setToolTip("Fetch the last N lines again (more history) and add any not already shown")
         self.btn_refresh.clicked.connect(self.refresh)
         self.count_label = QLabel("")
+        self.state_label = QLabel("")
+        self.state_label.setWordWrap(True)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Last"))
+        top.addWidget(QLabel("First fetch: last"))
         top.addWidget(self.lines)
         top.addWidget(QLabel("lines"))
         top.addWidget(self.rotated)
+        top.addWidget(self.btn_refresh)
         top.addSpacing(12)
         top.addWidget(self.range)
         top.addWidget(self.search, 1)
         top.addWidget(self.blocked_only)
-        top.addWidget(self.live)
-        top.addWidget(self.btn_refresh)
 
         self.req_model = _Model(
             ["Time", "Result", "Site", "Method", "Status", "Size"],
@@ -140,15 +149,14 @@ class ActivityTab(QWidget):
 
         lay = QVBoxLayout(self)
         lay.addLayout(top)
+        lay.addWidget(self.state_label)
         lay.addWidget(self.views, 1)
         lay.addWidget(self.count_label)
 
         for w in (self.range.currentIndexChanged, self.search.textChanged,
                   self.blocked_only.toggled):
             w.connect(self._apply_filters)
-        self.timer = QTimer(self, interval=5000)
-        self.timer.timeout.connect(self.refresh)
-        self.live.toggled.connect(lambda on: self.timer.start() if on else self.timer.stop())
+        self.collector.updated.connect(self._collected)
 
     def _make_view(self, model, host_col):
         v = QTableView()
@@ -166,45 +174,61 @@ class ActivityTab(QWidget):
     # ---- data ---------------------------------------------------------------------
     def set_child(self, child):
         self.child = child
-        self.entries = []
+        self.entries = list(self.collector.activity(child.id).entries) if child else []
         self._apply_filters()
-        self.count_label.setText("" if child else "Select a child.")
+        self._show_state()
+        if not child:
+            self.count_label.setText("Select a child.")
         self.btn_refresh.setEnabled(child is not None)
 
-    def refresh(self):
-        if not self.child or self.busy:
-            return
-        child, n, rot = self.child, self.lines.value(), self.rotated.isChecked()
-        self.busy = True
-        live = self.live.isChecked()
-        if not live:
-            self.status.emit(f"Downloading {child.name}'s activity log…")
-            self._controls(False)
-
-        def job():
-            return accesslog.parse(self.remotes.get(child).log(n, rot))
-
-        def ok(entries):
-            self.busy = False
-            self._controls(True)
-            if child is self.child:
-                self.entries = entries
+    def _collected(self, child_id):
+        if self.child and child_id == self.child.id:
+            a = self.collector.activity(child_id)
+            if len(a.entries) != len(self.entries) or (a.entries and self.entries and a.entries[0] is not self.entries[0]):
+                self.entries = list(a.entries)
                 self._apply_filters()
-                if not self.live.isChecked():
-                    self.status.emit(f"Loaded {len(entries)} log entries from {child.name}'s laptop.")
+            self._show_state()
+            self.btn_refresh.setEnabled(not a.busy)
 
-        def err(msg):
-            self.busy = False
-            self._controls(True)
-            self.live.setChecked(False)
-            self.status.emit(msg)
+    def _show_state(self):
+        """One line saying how current the activity is."""
+        if not self.child:
+            self.state_label.setText("")
+            return
+        c = self.child
+        a = self.collector.activity(c.id)
+        red = "<span style='color:#c0392b'>{}</span>"
+        notes = []
+        if not self.collector.is_active(c.id):
+            text = (f"Not logged in to {c.name}'s PC - activity is not being collected.  "
+                    "Select the child again (or press Load history) to log in.")
+        elif a.last_error:
+            when = (f"last updated {datetime.fromtimestamp(a.last_ok).strftime('%H:%M:%S')}"
+                    if a.last_ok else "nothing collected yet")
+            text = red.format(f"Activity is out of date ({when}): {a.last_error}  Retrying automatically.")
+        elif a.last_ok:
+            text = (f"Collecting automatically while logged in (every {POLL_SECONDS} s) - "
+                    f"last updated {datetime.fromtimestamp(a.last_ok).strftime('%H:%M:%S')}.")
+        else:
+            text = f"Collecting {c.name}'s activity…"
+        if a.bypassed:
+            notes.append(red.format(f"Blighter is switched off on {c.name}'s PC itself ('Pause Blighter Child'), "
+                                    "so no activity is being recorded.  Press Resume filtering on the PC tab."))
+        if a.legacy:
+            notes.append(f"{c.name}'s PC has an older Blighter child (before 1.2.6): the app has to fetch "
+                         "the latest lines again each time.  Update the PC to 1.2.6.")
+        if a.gap:
+            notes.append("Some activity may be missing: the PC's log was started afresh (rotated) before "
+                         "everything was collected.")
+        self.state_label.setText("<br>".join([text] + notes))
 
-        run_bg(job, ok, err, quiet=live)
-
-    def _controls(self, on):
-        """Grey out Refresh and the download options while a download runs."""
-        for w in (self.btn_refresh, self.lines, self.rotated, self.live):
-            w.setEnabled(on and (self.child is not None or w is not self.btn_refresh))
+    def refresh(self):
+        """Load history: fetch the last N lines and add any not already shown."""
+        if not self.child:
+            return
+        if self.collector.load_history(self.child, self.lines.value(), self.rotated.isChecked()):
+            self.btn_refresh.setEnabled(False)
+            self.status.emit(f"Fetching {self.child.name}'s activity history…")
 
     def _apply_filters(self):
         _, rng = RANGES[self.range.currentIndex()]
@@ -228,6 +252,8 @@ class ActivityTab(QWidget):
                 f"{len(rows)} requests shown ({n_blocked} blocked) across "
                 f"{len(self.sum_model.items)} sites; {len(self.entries)} loaded.  "
                 "HTTPS shows the site name only, not individual pages.")
+        elif not self.child:
+            self.count_label.setText("Select a child.")
 
     # ---- right-click ----------------------------------------------------------------
     def _menu(self, view, pos):

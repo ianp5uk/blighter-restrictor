@@ -2,9 +2,9 @@
 # Blighter Restrictor - shared domain-list rules.
 #
 # Purpose: validate and normalise the domain lists that the parent app edits and
-# the child-laptop helper writes into Squid "dstdomain" ACL files.  The same
+# the child-PC helper writes into Squid "dstdomain" ACL files.  The same
 # file is shipped in BOTH packages (parent app and child helper) so the parent's
-# on-screen checks and the laptop's final checks always agree.
+# on-screen checks and the PC's final checks always agree.
 #
 # Squid dstdomain syntax supported:
 #   .example.com   -> example.com AND every subdomain (the usual "wildcard")
@@ -213,7 +213,7 @@ def opera_rules(blocked):
 
 # ---- Home network ----------------------------------------------------------------
 # Blighter controls INTERNET access only; the home network is assumed safe.
-# With the "Allow home network access" switch on, the laptop's firewall lets
+# With the "Allow home network access" switch on, the PC's firewall lets
 # everything through to these subnets (printers, NAS drives, ...) and Squid
 # lets web pages on them through in both modes.
 PRIVATE_NETS = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")   # RFC 1918
@@ -248,7 +248,7 @@ def clean_subnets(items):
             errors.append(f"'{s}' would be the whole internet")
             continue
         if net.is_loopback:
-            errors.append(f"'{s}' is this laptop itself")
+            errors.append(f"'{s}' is this PC itself")
             continue
         text = str(net)
         if text in out:

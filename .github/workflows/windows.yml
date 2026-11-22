@@ -20,7 +20,7 @@
 #                    OpenSSH, the self-repair task, pause / resume, a re-run
 #                    that replaces Blighter's own Squid (lists and log kept;
 #                    "Squid updated" note when the file differs), then
-#                    removal through the uninstaller - checking the laptop's settings afterwards
+#                    removal through the uninstaller - checking the PC's settings afterwards
 #                    match those recorded before setup.
 #
 # Copyright (C) 2026 Ways Property
@@ -184,7 +184,7 @@ jobs:
           Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
           Write-Host "OK: direct web access works again after removal"
           if ($bad) { $bad | ForEach-Object { Write-Host "NOT RESTORED: $_" }; throw "$($bad.Count) difference(s) after removal" }
-          Write-Host "OK: laptop settings match the state recorded before setup"
+          Write-Host "OK: PC settings match the state recorded before setup"
           '@ | Set-Content "$env:RUNNER_TEMP\compare.ps1"
           "BLIGHTER_ADMIN_PASSWORD=Parent-$(Get-Random)-Aa1!" | Out-File -Append $env:GITHUB_ENV
       - name: Interrupted setup is undone
@@ -223,7 +223,7 @@ jobs:
           Get-Content "$env:TEMP\Blighter-Child-Setup.log" -ErrorAction SilentlyContinue | Select-Object -Last 15
           if ($p.ExitCode -eq 0) { throw "setup should have refused to replace another program's Squid" }
           if (-not (Select-String "$env:TEMP\Blighter-Child-Setup.log" -Pattern "not installed by Blighter" -Quiet)) { throw "setup failed for a different reason" }
-          if (Test-Path C:\ProgramData\BlighterChild\state\pre-install.json) { throw "setup changed the laptop although it refused" }
+          if (Test-Path C:\ProgramData\BlighterChild\state\pre-install.json) { throw "setup changed the PC although it refused" }
           if (-not (Select-String C:\Squid\etc\squid\squid.conf -Pattern "OTHER-PROGRAM-CONFIG" -Quiet)) { throw "other program's squid.conf was changed" }
           Write-Host "OK: another program's Squid left alone"
           $global:LASTEXITCODE = 0
@@ -249,7 +249,10 @@ jobs:
           $u = Get-ChildItem HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall | Get-ItemProperty | Where-Object { $_.DisplayName -like "Blighter Child*" }
           if (-not $u) { throw "no entry in Settings > Apps" }
           Write-Host "Settings > Apps: $($u.DisplayName) $($u.DisplayVersion)"
-          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Blighter Child\Pause filtering (parent).lnk")) { throw "Pause shortcut missing" }
+          if (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Blighter Child") { throw "Start menu shortcuts should no longer be made" }
+          foreach ($f in "Blighter-Details.cmd", "blighter-details.ps1", "logtail.py") {
+            if (-not (Test-Path "C:\ProgramData\BlighterChild\$f")) { throw "$f missing in C:\ProgramData\BlighterChild" }
+          }
           if (-not (Test-Path "${env:ProgramFiles}\Blighter Child\THIRD-PARTY-NOTICES.txt")) { throw "notices not installed" }
           icacls C:\Squid; icacls C:\ProgramData\BlighterChild; icacls C:\ProgramData\BlighterChild\python\python.exe
           Write-Host "OK: installed with the Setup.exe"
@@ -290,6 +293,16 @@ jobs:
           $log = & $h log 20
           $log | Write-Host
           if (-not ($log -match "TCP_DENIED")) { throw "No TCP_DENIED entry in the Squid log" }
+          # Reading only new log lines (what the parent app does in the background).
+          $ls = & $h logstart 5 | ConvertFrom-Json
+          if (-not $ls.ino -or $ls.lines.Count -lt 1) { throw "logstart gave no position or lines" }
+          $ln = & $h lognext $ls.ino $ls.offset | ConvertFrom-Json
+          if ($ln.lines.Count -ne 0) { throw "lognext repeated old lines" }
+          try { Invoke-WebRequest https://www.example.com -Proxy http://127.0.0.1:3128 -TimeoutSec 30 | Out-Null } catch { }
+          Start-Sleep -Seconds 2
+          $ln = & $h lognext $ls.ino $ls.offset | ConvertFrom-Json
+          if (-not (($ln.lines -join "`n") -match "www\.example\.com")) { throw "lognext did not return the new request: $($ln.lines -join ' | ')" }
+          Write-Host "OK: logstart / lognext return only new lines"
           # The block page must not mention Squid (plain http shows Squid's page).
           $page = (& curl.exe -s -i -x http://127.0.0.1:3128 http://www.example.com/) -join "`n"
           Write-Host $page
@@ -383,6 +396,8 @@ jobs:
           print('apply:', res)
           assert res['ok']
           print(r.log(5))
+          s = r.log_start(5); print('log_start:', s['ino'], s['offset'], len(s['lines']))
+          n = r.log_next(s['ino'], s['offset']); print('log_next:', len(n['lines']), n['more'])
           r.close()
           "@ | Set-Content ci_ssh.py
           python ci_ssh.py $env:BLIGHTER_ADMIN_PASSWORD
@@ -401,28 +416,65 @@ jobs:
         shell: pwsh
         run: |
           # As the parent app does it: the helper's pause / resume commands.
+          # Since 1.2.6 the parent app's pause allows every site but keeps the
+          # firewall and proxy, so activity is still recorded.
           $h = "C:\ProgramData\BlighterChild\blighter-apply.cmd"
+          $r = '{"mode":"allow-all-block-some","allow":[],"block":[".example.com"]}' | & $h set | ConvertFrom-Json
+          if (-not $r.ok) { throw "set failed: $($r.message)" }
           $r = & $h pause | ConvertFrom-Json
           Write-Host "pause: $($r.message)"
-          if (-not $r.ok -or -not $r.paused) { throw "pause failed: $($r.errors)" }
-          & "$env:RUNNER_TEMP\runner-rules.ps1"
-          Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
-          Write-Host "OK: paused - direct web access works"
-          $v = (Get-ItemProperty HKLM:\SOFTWARE\Policies\Google\Chrome).ProxySettings
-          if ($v -ne "PRE-EXISTING") { throw "pause did not restore the earlier Chrome policy ($v)" }
-          $st = & C:\ProgramData\BlighterChild\blighter-apply.cmd status | ConvertFrom-Json
-          if (-not $st.paused -or $st.firewall_active) { throw "status should report paused" }
-          if ((Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -TaskName Enforce).State -ne "Disabled") { throw "Enforce task not disabled" }
-          Write-Host "OK: paused state reported; Enforce task disabled"
+          if (-not $r.ok -or -not $r.paused -or $r.bypassed) { throw "pause failed: $($r.errors)" }
+          $direct = $true
+          try { Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 15 | Out-Null } catch { $direct = $false }
+          if ($direct) { throw "parent-app pause opened direct web access (monitoring would stop)" }
+          $ls = & $h logstart 1 | ConvertFrom-Json
+          Invoke-WebRequest https://www.example.com -Proxy http://127.0.0.1:3128 -TimeoutSec 30 | Out-Null
+          Write-Host "OK: paused - a blocked site is allowed through Squid; direct access still blocked"
+          Start-Sleep -Seconds 2
+          $ln = & $h lognext $ls.ino $ls.offset | ConvertFrom-Json
+          if (-not (($ln.lines -join "`n") -match "TCP_TUNNEL/200 .*www\.example\.com")) { throw "request while paused not recorded: $($ln.lines -join ' | ')" }
+          Write-Host "OK: activity recorded while paused"
+          $st = & $h status | ConvertFrom-Json
+          if (-not $st.paused -or $st.bypassed -or -not $st.firewall_active) { throw "status while paused: paused=$($st.paused) bypassed=$($st.bypassed) firewall=$($st.firewall_active)" }
+          if ((Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -TaskName Enforce).State -eq "Disabled") { throw "Enforce task disabled by the parent-app pause" }
           $r = & $h resume | ConvertFrom-Json
           Write-Host "resume: $($r.message)"
           if (-not $r.ok -or $r.paused) { throw "resume failed: $($r.errors)" }
+          $blocked = $true
+          try { Invoke-WebRequest https://www.example.com -Proxy http://127.0.0.1:3128 -TimeoutSec 30 | Out-Null; $blocked = $false } catch { }
+          if (-not $blocked) { throw "resume did not block the site again" }
+          Write-Host "OK: resumed - blocked site refused again"
+          # The local troubleshooting switch ("Pause Blighter Child.cmd") turns
+          # everything off; the parent app sees it and its Resume ends it.
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\BlighterChild\blighter-system.ps1 pause
+          & "$env:RUNNER_TEMP\runner-rules.ps1"
+          Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 30 | Out-Null
+          Write-Host "OK: switched off on the PC - direct web access works"
+          $v = (Get-ItemProperty HKLM:\SOFTWARE\Policies\Google\Chrome).ProxySettings
+          if ($v -ne "PRE-EXISTING") { throw "local pause did not restore the earlier Chrome policy ($v)" }
+          $st = & $h status | ConvertFrom-Json
+          if (-not $st.paused -or -not $st.bypassed -or $st.firewall_active) { throw "status should report switched off on the PC" }
+          if ((Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -TaskName Enforce).State -ne "Disabled") { throw "Enforce task not disabled" }
+          $ln = & $h lognext - 0 | ConvertFrom-Json
+          if (-not $ln.bypassed) { throw "lognext should report bypassed" }
+          Write-Host "OK: switched-off state reported; Enforce task disabled"
+          $r = & $h resume | ConvertFrom-Json
+          Write-Host "resume: $($r.message)"
+          if (-not $r.ok -or $r.paused -or $r.bypassed) { throw "resume after local pause failed: $($r.errors)" }
           $direct = $true
           try { Invoke-WebRequest https://example.com -NoProxy -TimeoutSec 15 | Out-Null } catch { $direct = $false }
           if ($direct) { throw "resume did not block direct access" }
-          $st = & C:\ProgramData\BlighterChild\blighter-apply.cmd status | ConvertFrom-Json
+          $st = & $h status | ConvertFrom-Json
           if ($st.paused -or -not $st.firewall_active) { throw "status after resume" }
-          Write-Host "OK: resumed - direct web access blocked again"
+          Write-Host "OK: resumed by the parent app - direct web access blocked again"
+          # Connection details / repair (Blighter-Details.cmd uses this) keeps the SSH host keys.
+          $before = (Get-FileHash C:\ProgramData\ssh\ssh_host_ed25519_key.pub).Hash
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\BlighterChild\blighter-system.ps1 repair
+          if ($LASTEXITCODE) { throw "repair failed" }
+          if ((Get-FileHash C:\ProgramData\ssh\ssh_host_ed25519_key.pub).Hash -ne $before) { throw "repair changed the SSH host key" }
+          $st = & $h status | ConvertFrom-Json
+          if (-not $st.firewall_active) { throw "firewall not active after repair" }
+          Write-Host "OK: repair keeps the SSH identity and the firewall"
       - name: Re-run replaces Blighter's own Squid and keeps the lists
         shell: pwsh
         run: |

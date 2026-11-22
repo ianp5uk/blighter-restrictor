@@ -11,7 +11,7 @@
 #     the title bar itself; Windows 10 ignores the request)
 #   * buttons get a clear border; the border turns blue on hover and the
 #     button darkens and its text nudges down when pressed.  The default
-#     button (Apply to laptop, Save) keeps a blue border
+#     button (Apply to PC, Save) keeps a blue border
 #   * a pointing-finger cursor over buttons, check boxes, radio buttons,
 #     drop-downs and tabs
 #   * Linux: a Segoe UI-like font, and Windows-style check boxes / radio

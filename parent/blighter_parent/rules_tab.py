@@ -2,23 +2,23 @@
 # Blighter Restrictor - "Rules" tab.
 #
 # Purpose: show and edit one child's filtering mode and domain lists, check
-# them as you type (same rules as the laptop), and apply them.  Applying
-# sends the lists to the laptop, which checks them with Squid and reloads,
+# them as you type (same rules as the PC), and apply them.  Applying
+# sends the lists to the PC, which checks them with Squid and reloads,
 # or restores the previous rules if Squid rejects them.
 #   Mode "Allow all, block some"  -> only the Block list is used
 #   Mode "Block all, allow some"  -> only the Allow list is used
 # Both lists are always kept, so switching mode never loses either one.
 # "Allow Discord" is a separate per-child switch (Discord's web addresses and,
-# for voice/video calls, UDP 50000-65535 in the laptop's firewall).  It wins
-# over both lists, and is applied with them by "Apply to laptop".  Discord
+# for voice/video calls, UDP 50000-65535 in the PC's firewall).  It wins
+# over both lists, and is applied with them by "Apply to PC".  Discord
 # lines typed into a list are pointed out, as they have no effect.
 # "Allow home network access" (with the home network's subnet(s)) lets the
-# laptop reach printers, NAS drives and other home devices: Blighter controls
-# internet access only.  "Use current network" asks the laptop which network
+# PC reach printers, NAS drives and other home devices: Blighter controls
+# internet access only.  "Use current network" asks the PC which network
 # it is on now.  "Block Opera downloads" (on by default) stops Opera being
 # downloaded: its built-in VPN can't be switched off by policy.  All three
-# switches are applied with the lists.  Until the laptop has answered, their
-# hover text says so (it only says "update" if the laptop answered without
+# switches are applied with the lists.  Until the PC has answered, their
+# hover text says so (it only says "update" if the PC answered without
 # that setting).
 #
 # Copyright (C) 2026 Ian Packer
@@ -46,17 +46,17 @@ HELP = ("One domain per line.  <b>.example.com</b> = the site and all its subdom
 
 
 DISCORD_TIP = ("Discord is controlled here, not by the lists.  Takes effect when you "
-               "press 'Apply to laptop'.")
-DISCORD_OLD_TIP = "This laptop's Blighter child version has no Discord switch - update it to 1.2.2 or later."
+               "press 'Apply to PC'.")
+DISCORD_OLD_TIP = "This PC's Blighter child version has no Discord switch - update it to 1.2.2 or later."
 OPERA_TIP = ("Blocks opera.com and Opera's download servers, so the Opera browser can't be "
              "downloaded (Opera's built-in VPN can't be switched off).  An Opera that is already "
-             "installed is not removed.  Takes effect when you press 'Apply to laptop'.")
-OPERA_OLD_TIP = "This laptop's Blighter child version has no Opera switch - update it to 1.2.4 or later."
-HOME_OLD_TIP = ("This laptop's Blighter child version has no home network setting - "
+             "installed is not removed.  Takes effect when you press 'Apply to PC'.")
+OPERA_OLD_TIP = "This PC's Blighter child version has no Opera switch - update it to 1.2.4 or later."
+HOME_OLD_TIP = ("This PC's Blighter child version has no home network setting - "
                 "update it to 1.2.3 or later.")
-WAIT_TIP = "Waiting for the laptop to answer…"
-FAIL_TIP = "Couldn't read this laptop's settings - press 'Reload from laptop' to try again."
-HOME_TIP = ("Lets the laptop reach the home network directly: printers, NAS drives and other home "
+WAIT_TIP = "Waiting for the PC to answer…"
+FAIL_TIP = "Couldn't read this PC's settings - press 'Reload from PC' to try again."
+HOME_TIP = ("Lets the PC reach the home network directly: printers, NAS drives and other home "
             "devices.  Blighter controls internet access only.  Give the home network's subnet(s), "
             "e.g. 192.168.1.0/24, separated by spaces.")
 
@@ -68,7 +68,7 @@ class RulesTab(QWidget):
         super().__init__(parent)
         self.remotes = remotes
         self.child = None
-        self.loaded = None  # (mode, allow_text, block_text, discord, home, opera) as last read from the laptop
+        self.loaded = None  # (mode, allow_text, block_text, discord, home, opera) as last read from the PC
         self.discord_supported = False
         self.opera_supported = False
         self.home_supported = False
@@ -106,7 +106,7 @@ class RulesTab(QWidget):
         self.home_edit.setToolTip(HOME_TIP)
         self.home_label = QLabel("")
         self.btn_home = QPushButton("Use current network")
-        self.btn_home.setToolTip("Ask the laptop which network it is on now")
+        self.btn_home.setToolTip("Ask the PC which network it is on now")
         self.cb_home.toggled.connect(lambda *_: self._changed())
         self.home_edit.textChanged.connect(lambda *_: self._changed())
         self.btn_home.clicked.connect(self.use_current_network)
@@ -145,11 +145,11 @@ class RulesTab(QWidget):
         help_label = QLabel(HELP)
         help_label.setWordWrap(True)
 
-        self.btn_reload = QPushButton("Reload from laptop")
+        self.btn_reload = QPushButton("Reload from PC")
         self.btn_tidy = QPushButton("Tidy lists")
         self.btn_tidy.setToolTip("Apply the automatic conversions and remove duplicates in the editor")
         self.btn_revert = QPushButton("Revert")
-        self.btn_apply = QPushButton("Apply to laptop")
+        self.btn_apply = QPushButton("Apply to PC")
         self.btn_apply.setDefault(True)
         self.btn_reload.clicked.connect(self.reload)
         self.btn_tidy.clicked.connect(self.tidy)
@@ -240,7 +240,7 @@ class RulesTab(QWidget):
             w.setToolTip(tip_home)
 
     def _fill(self, mode, allow_lines, block_lines, discord=None, home=None, opera=None, answered=True):
-        """Show settings.  answered=False: the laptop hasn't replied yet (blank tab)."""
+        """Show settings.  answered=False: the PC hasn't replied yet (blank tab)."""
         for e in (self.block_edit, self.allow_edit):
             e.blockSignals(True)
         self.allow_edit.setPlainText("\n".join(allow_lines).strip())
@@ -289,7 +289,7 @@ class RulesTab(QWidget):
             return
         child = self.child
         self.busy = True
-        self.status.emit(f"Reading rules from {child.name}'s laptop…")
+        self.status.emit(f"Reading rules from {child.name}'s PC…")
 
         def ok(data):
             self.busy = False
@@ -298,7 +298,7 @@ class RulesTab(QWidget):
             self._fill(data.get("mode"), data.get("allow", []), data.get("block", []), data.get("discord"),
                        data.get("home_net"), data.get("opera"))
             self._set_enabled(True)
-            self.status.emit(f"Rules loaded from {child.name}'s laptop.")
+            self.status.emit(f"Rules loaded from {child.name}'s PC.")
 
         def err(msg):
             self.busy = False
@@ -336,7 +336,7 @@ class RulesTab(QWidget):
             return f"{domain} is already in the {which} list."
         lines.append(domain)
         edit.setPlainText("\n".join(lines))
-        return f"Added {domain} to the {which} list - press 'Apply to laptop' to make it live."
+        return f"Added {domain} to the {which} list - press 'Apply to PC' to make it live."
 
     def apply(self):
         if not self.child or self.busy:
@@ -358,7 +358,7 @@ class RulesTab(QWidget):
                     "name": self.home_name}
         self.busy = True
         self._set_enabled(False)
-        self.status.emit(f"Applying rules to {child.name}'s laptop…")
+        self.status.emit(f"Applying rules to {child.name}'s PC…")
 
         def ok(res):
             self.busy = False
@@ -388,13 +388,13 @@ class RulesTab(QWidget):
         self.home_label.setText(f"({self.home_name})" if self.home_name else "")
 
     def use_current_network(self):
-        """Fill in the network(s) the laptop is on now (private ranges first)."""
+        """Fill in the network(s) the PC is on now (private ranges first)."""
         if not self.child or self.busy:
             return
         child = self.child
         self.busy = True
         self._set_enabled(False)
-        self.status.emit(f"Asking {child.name}'s laptop which network it is on…")
+        self.status.emit(f"Asking {child.name}'s PC which network it is on…")
 
         def ok(res):
             self.busy = False
@@ -406,7 +406,7 @@ class RulesTab(QWidget):
             pick = private or nets
             if not pick:
                 QMessageBox.information(self, "No network found",
-                                        "The laptop doesn't seem to be on a network right now.")
+                                        "The PC doesn't seem to be on a network right now.")
                 self.status.emit(f"{child.name}: no current network found.")
                 return
             self.home_edit.setText(pick[0]["subnet"])
@@ -417,7 +417,7 @@ class RulesTab(QWidget):
             self.status.emit(f"{child.name} is on {pick[0]['subnet']}"
                              + (f" ({self.home_name})" if self.home_name else "")
                              + (f"; also {others}" if others else "")
-                             + " - press 'Apply to laptop' to use it.")
+                             + " - press 'Apply to PC' to use it.")
 
         def err(msg):
             self.busy = False

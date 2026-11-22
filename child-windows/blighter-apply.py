@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
-# Blighter Restrictor - child-laptop helper for WINDOWS.
+# Blighter Restrictor - child-PC helper for WINDOWS.
 #
-# Purpose: the command the parent app runs on a child's Windows laptop over
+# Purpose: the command the parent app runs on a child's Windows PC over
 # SSH, as the "blighter" administrator account.  It offers exactly the same
 # commands and JSON replies as the Ubuntu helper (/usr/sbin/blighter-apply),
 # so the parent app treats both systems alike.  It is started through
@@ -21,9 +21,19 @@
 #                       config ("restart Squid on command")
 #   log N [rotated]     plain text: last N lines of the Squid access log,
 #                       optionally including older rotated logs
+#   logstart N [rotated]  JSON: the last N lines plus the log position
+#   lognext INO OFFSET  JSON: only the lines written since that position
+#                       (see logtail.py) - the parent app collects activity
+#                       with these without fetching lines twice
 #   init                (used by blighter-setup.ps1) create default files
-#   netinfo             the networks the laptop is on now (for the home network setting)
-#   pause / resume      blighter-system.ps1 pause / resume (as the .cmd files do)
+#   netinfo             the networks the PC is on now (for the home network setting)
+#   pause / resume      all websites allowed / filtering back on (the parent
+#                       app's Pause).  Since 1.2.6 this only changes Squid's
+#                       rules (state\open): the firewall and proxy settings
+#                       stay on, so activity is still recorded.  The local
+#                       "Pause Blighter Child.cmd" is different: it switches
+#                       Blighter off completely (state\paused, monitoring
+#                       stops too) for troubleshooting.  "resume" ends both.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -47,14 +57,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import domains  # noqa: E402  (shared validation, same file as the parent app)
 import blockpage  # noqa: E402  (neutral error pages, same file as the Ubuntu helper)
+import logtail  # noqa: E402  (incremental log reading, same file as the Ubuntu helper)
 
-VERSION = "1.2.5"
+VERSION = "1.2.6"
 PLATFORM = "windows"
 SERVICE = "squidsrv"            # service name used by Diladele's installer
 CHILD_CONF = os.path.join(HERE, "child.conf")
 SYSTEM_PS1 = os.path.join(HERE, "blighter-system.ps1")
 STATE_DIR = os.path.join(HERE, "state")
-PAUSED_FLAG = os.path.join(STATE_DIR, "paused")
+PAUSED_FLAG = os.path.join(STATE_DIR, "paused")   # switched off on the PC itself (Pause .cmd)
+OPEN_FLAG = os.path.join(STATE_DIR, "open")       # parent app's Pause: all sites allowed, still logged
 MAX_LOG_LINES = 100000
 NO_WINDOW = 0x08000000          # CREATE_NO_WINDOW
 
@@ -176,7 +188,7 @@ def discord_allowed():
 
 def opera_blocked():
     """Opera downloads blocked?  (Missing from child.conf = yes, so updated
-    laptops get the block too.)"""
+    PCs get the block too.)"""
     return conf_value("BLOCK_OPERA", "yes") != "no"
 
 
@@ -189,7 +201,7 @@ def home_net():
 
 def parse_options(data):
     """Read the optional "discord" and "home_net" parts of a set request.
-    Older parent apps send neither; then the laptop's settings are kept.
+    Older parent apps send neither; then the PC's settings are kept.
     Returns (discord, home, errors, warnings)."""
     discord = data.get("discord")
     discord = discord_allowed() if discord is None else bool(discord)
@@ -211,13 +223,25 @@ def fix_conf_permissions():
     pass   # C:\ProgramData\BlighterChild is locked by setup; files inherit that.
 
 
-def is_paused():
+def is_bypassed():
+    """Switched off completely on the PC itself ("Pause Blighter Child.cmd"):
+    firewall and proxy settings are back to normal, so Squid sees nothing."""
     return os.path.exists(PAUSED_FLAG)
 
 
+def is_open():
+    return os.path.exists(OPEN_FLAG)
+
+
+def is_paused():
+    return is_open() or is_bypassed()
+
+
 def paused_rules():
-    # On Windows, pausing points the browsers and the child's proxy setting
-    # back to how they were before setup, so Squid's rules need no change.
+    # The parent app's Pause: Squid lets everything through.  The firewall
+    # and proxy settings stay on, so every request is still logged.
+    if is_open():
+        return "# PAUSED (Pause in the parent app): everything allowed, still logged\nhttp_access allow localhost\n"
     return ""
 
 
@@ -389,7 +413,8 @@ def cmd_status():
         "child_is_admin": sysst.get("child_is_admin"),
         "other_admins": sysst.get("other_admins", []),
         "network_profile": sysst.get("network_profile", "?"),
-        "paused": bool(sysst.get("paused")),
+        "paused": is_paused(),
+        "bypassed": bool(sysst.get("paused")),
         "home_net": home_net(),
         "warnings": sysst.get("warnings", []),
     })
@@ -464,7 +489,7 @@ def cmd_set():
         if home_changed:
             message += " Home network access " + ("on." if home["allowed"] else "off.")
         if fw_code != 0:
-            message += " WARNING: the laptop's firewall could not be updated: " + fw_msg[-300:]
+            message += " WARNING: the PC's firewall could not be updated: " + fw_msg[-300:]
     warn = [l for l in msg.splitlines() if "WARNING" in l] + opt_warnings
     out({"ok": True, "message": message, "discord": discord_allowed(), "home_net": home_net(),
          "opera": opera_blocked(),
@@ -491,7 +516,7 @@ def networks_from(entries):
 
 
 def current_networks():
-    """The networks this laptop is on now (adapters with a default route), with names."""
+    """The networks this PC is on now (adapters with a default route), with names."""
     code, text = system_ps1("netinfo")
     start = text.find("[")
     try:
@@ -508,17 +533,37 @@ def cmd_netinfo():
 
 
 def cmd_pause(on):
-    """Pause (on=True) or resume filtering, as 'Pause / Resume Blighter Child.cmd' do."""
-    code, msg = system_ps1("pause" if on else "resume", timeout=300)
-    ok = code == 0
-    out({"ok": ok, "paused": is_paused(),
-         "message": (("Filtering PAUSED - the child has open internet access." if on else "Filtering RESUMED.")
-                     if ok else ("Pause" if on else "Resume") + " failed"),
-         "errors": [] if ok else [msg[-800:]]}, 0 if ok else 1)
+    """The parent app's Pause (on=True: every site allowed, activity still
+    recorded) or Resume.  Resume also switches Blighter back on if it was
+    switched off on the PC itself with 'Pause Blighter Child.cmd'."""
+    problems = []
+    if on:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        write(OPEN_FLAG, time.strftime("%Y-%m-%d %H:%M:%S") + "\n")
+    elif os.path.exists(OPEN_FLAG):
+        os.remove(OPEN_FLAG)
+    write(RULES_FILE, render_rules(read_mode(), read(ALLOW_FILE).splitlines(), read(BLOCK_FILE).splitlines()))
+    code, msg = squid_parse()
+    ok, rmsg = (squid_reload() if code == 0 else (False, msg))
+    if not ok:
+        problems.append("Squid: " + parse_errors(rmsg))
+    if not on and is_bypassed():
+        code, msg = system_ps1("resume", timeout=300)
+        if code != 0:
+            problems.append("Firewall / proxy: " + msg[-800:])
+    if on:
+        message = "Filtering PAUSED - all websites are allowed; activity is still recorded."
+        if is_bypassed():
+            message += (" Note: Blighter was switched off on the PC itself ('Pause Blighter Child'), "
+                        "so nothing is recorded until you press Resume.")
+    else:
+        message = "Filtering RESUMED."
+    out({"ok": not problems, "paused": is_paused(), "bypassed": is_bypassed(),
+         "message": message, "errors": problems}, 0 if not problems else 1)
 
 
 def cmd_reload():
-    # Rewrite rules.conf too, so a laptop set up by an older version gets the
+    # Rewrite rules.conf too, so a PC set up by an older version gets the
     # current Squid settings (e.g. the neutral error pages).
     write(RULES_FILE, render_rules(read_mode(), read(ALLOW_FILE).splitlines(), read(BLOCK_FILE).splitlines()))
     code, msg = squid_parse()
@@ -552,6 +597,31 @@ def cmd_log(args):
     sys.stdout.write("\n".join(collected[-n:]) + "\n")
 
 
+def _rotated_logs():
+    """Squid's own rotation on Windows: access.log.0 is the newest old log."""
+    return [p for p in (os.path.join(LOG_DIR, f"access.log.{i}") for i in range(0, 15)) if os.path.exists(p)]
+
+
+def cmd_logstart(args):
+    try:
+        n = max(1, min(int(args[0]), MAX_LOG_LINES))
+    except (ValueError, IndexError):
+        sys.exit("logstart: N must be a number")
+    rotated = len(args) > 1 and args[1] == "rotated"
+    res = logtail.start(os.path.join(LOG_DIR, "access.log"), _rotated_logs(), n, rotated)
+    res["bypassed"] = is_bypassed()
+    out(res)
+
+
+def cmd_lognext(args):
+    if len(args) != 2 or not args[1].isdigit():
+        sys.exit("lognext: INO OFFSET")
+    ino = "" if args[0] == "-" else args[0]
+    res = logtail.next_lines(os.path.join(LOG_DIR, "access.log"), _rotated_logs(), ino, args[1])
+    res["bypassed"] = is_bypassed()
+    out(res)
+
+
 def cmd_init():
     os.makedirs(BASE, exist_ok=True)
     if not os.path.exists(ALLOW_FILE):
@@ -568,7 +638,8 @@ def cmd_init():
     print("Blighter rule files ready in " + BASE)
 
 
-USAGE = "usage: blighter-apply get|status|set|reload|log N [rotated]|init|netinfo|pause|resume"
+USAGE = ("usage: blighter-apply get|status|set|reload|log N [rotated]|logstart N [rotated]|"
+         "lognext INO OFFSET|init|netinfo|pause|resume")
 
 
 def main():
@@ -580,7 +651,7 @@ def main():
              "This helper needs full administrator rights.  Run it from a PowerShell or "
              "Terminal window opened with 'Run as administrator' (the title starts with "
              "'Administrator:').  If the parent app reports this, the 'blighter' account is "
-             "not an administrator: run 'Install Blighter Child.cmd' on the laptop again."}, 3)
+             "not an administrator: run 'Install Blighter Child.cmd' on the PC again."}, 3)
     cmd, rest = args[0], args[1:]
     if cmd == "get" and not rest:
         cmd_get()
@@ -592,6 +663,10 @@ def main():
         cmd_reload()
     elif cmd == "log" and len(rest) <= 2:
         cmd_log(rest)
+    elif cmd == "logstart" and 1 <= len(rest) <= 2:
+        cmd_logstart(rest)
+    elif cmd == "lognext" and len(rest) == 2:
+        cmd_lognext(rest)
     elif cmd == "init" and not rest:
         cmd_init()
     elif cmd == "netinfo" and not rest:

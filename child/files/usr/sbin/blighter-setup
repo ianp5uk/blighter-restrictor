@@ -1,8 +1,8 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# Blighter Restrictor - one-time setup of a child's laptop.
+# Blighter Restrictor - one-time setup of a child's PC.
 #
-# Purpose: prepare this laptop so the parent app can manage it over the home
+# Purpose: prepare this PC so the parent app can manage it over the home
 # network.  Safe to run again (e.g. after installing Discord).  It:
 #   1. records which user account is the child's (/etc/blighter/child.conf)
 #   2. creates the "blighter" admin account (password login over SSH) that
@@ -16,8 +16,21 @@
 #   6. sets and locks the desktop proxy to 127.0.0.1:3128
 #   7. adds a proxy-aware Discord launcher if Discord (.deb or snap) is installed
 #
+# The first time it runs it asks the parent to confirm that the parent app is
+# already installed on their own PC (it is needed to finish connecting).
+# At the end it shows the address to enter in the parent app (the home
+# network's address).  If the address changes later, the parent app finds
+# this PC again by itself (it recognises the PC's SSH identity).
+#
 # Usage:  sudo blighter-setup <child-username> [--no-discord] [--replace-squid]
 #         (--no-voice also works for --no-discord)
+#         sudo blighter-setup --details            for a parent: show the address
+#                                                  for the parent app, check and
+#                                                  repair the connection (SSH,
+#                                                  sudo rule, firewall, Squid);
+#                                                  SSH host keys are kept - only
+#                                                  missing ones are created
+#         sudo blighter-setup --password           change the blighter password
 #         sudo blighter-setup --remove [--yes]      undo everything
 #
 # Copyright (C) 2026 Ian Packer
@@ -83,8 +96,99 @@ remove_all() {
     echo "Done. Squid rule files in /etc/squid/blighter were left in place."
 }
 
+# The address to type into the parent app: the one used for the default
+# route (the home network) first, then any others.
+main_ip() {
+    { ip -4 route get 192.0.2.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1; } || true
+}
+other_ips() {
+    local m
+    m=$(main_ip)
+    { hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | grep -vx "${m:-none}" | head -5 | tr '\n' ' '; } || true
+}
+
+# Password login over SSH for the admin account only (drop-in if needed).
+ensure_ssh() {
+    rm -f "$SSHD_DROPIN"
+    mkdir -p /run/sshd
+    # Missing host keys only (an existing key is the PC's identity - never replaced).
+    ssh-keygen -A >/dev/null 2>&1 || true
+    local pw_setting
+    pw_setting=$(sshd -T -C "user=$ADMIN,host=parent,addr=192.168.0.2" 2>/dev/null \
+            | grep -i '^passwordauthentication' || echo "unknown")
+    if ! echo "$pw_setting" | grep -qi ' yes$'; then
+        printf '# Blighter Restrictor: allow password login for the admin account only.\nMatch User %s\n    PasswordAuthentication yes\n    KbdInteractiveAuthentication yes\n' \
+            "$ADMIN" > "$SSHD_DROPIN"
+        sshd -t || { rm -f "$SSHD_DROPIN"; die "sshd rejected the drop-in"; }
+        echo "Password login enabled for '$ADMIN' only."
+    else
+        echo "Password login already allowed."
+    fi
+    svc enable ssh.socket
+    svc enable ssh.service
+    svc try-reload-or-restart ssh
+    svc start ssh.socket
+    if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow 22/tcp >/dev/null && echo "Opened port 22 in ufw."
+    fi
+}
+
+# The admin may run only the helper as root.
+ensure_sudoers() {
+    echo "$ADMIN ALL=(root) NOPASSWD: /usr/sbin/blighter-apply" > "$SUDOERS.tmp"
+    chmod 440 "$SUDOERS.tmp"
+    visudo -cf "$SUDOERS.tmp" >/dev/null || die "sudoers check failed"
+    mv "$SUDOERS.tmp" "$SUDOERS"
+}
+
+show_details() {
+    say "Connection details for the parent app"
+    local m
+    m=$(main_ip)
+    if [ -n "$m" ]; then
+        echo "On your own PC, open Blighter Restrictor and enter this address"
+        echo "(Add child, or Reconnect for a child already in the list):"
+        echo ""
+        printf '        \033[1;32m%s\033[0m\n' "$m"
+        echo ""
+        local o
+        o=$(other_ips)
+        if [ -n "$o" ]; then echo "Other addresses on this PC (only if the one above does not work): $o"; fi
+    else
+        warn "This PC is not connected to a network right now."
+    fi
+    echo "Login for the parent app: $ADMIN  (and its password)"
+    echo "Keep both PCs switched on and connected to your home network."
+}
+
 if [ "${1:-}" = "--remove" ]; then
     remove_all "$([ "${2:-}" = "--yes" ] && echo yes || echo no)"
+    exit 0
+fi
+
+if [ "${1:-}" = "--details" ]; then
+    [ -r "$CONF" ] || die "Blighter is not set up on this PC yet - run: sudo blighter-setup <child-username>"
+    show_details
+    say "Checking and repairing the connection"
+    id "$ADMIN" >/dev/null 2>&1 || die "The '$ADMIN' account is missing - run: sudo blighter-setup <child-username>"
+    ensure_sudoers
+    echo "sudo rule for '$ADMIN' OK."
+    ensure_ssh
+    if have_systemd; then
+        systemctl is-active --quiet ssh || systemctl is-active --quiet ssh.socket \
+            && echo "SSH server: running" || warn "SSH server is not running - check: systemctl status ssh"
+        systemctl restart blighter-firewall.service && echo "Firewall: on" || warn "The Blighter firewall could not be started."
+        systemctl is-active --quiet squid || systemctl start squid || true
+        systemctl is-active --quiet squid && echo "Squid: running" || warn "Squid is not running - check: systemctl status squid"
+    fi
+    echo "Done.  Nothing in the rules, settings or activity log was changed."
+    exit 0
+fi
+
+if [ "${1:-}" = "--password" ]; then
+    id "$ADMIN" >/dev/null 2>&1 || die "The '$ADMIN' account is missing - run: sudo blighter-setup <child-username>"
+    passwd "$ADMIN"
+    echo "Password changed.  In the parent app, select the child and use Edit (or Reconnect) to enter it."
     exit 0
 fi
 
@@ -101,8 +205,16 @@ for a in "${@:2}"; do
         *) die "Unknown option '$a'" ;;
     esac
 done
-[ -n "$CHILD" ] || die "Usage: sudo blighter-setup <child-username> [--no-discord] [--replace-squid]"
-id "$CHILD" >/dev/null 2>&1 || die "User '$CHILD' does not exist on this laptop"
+[ -n "$CHILD" ] || die "Usage: sudo blighter-setup <child-username> [--no-discord] [--replace-squid]  (or --details, --password, --remove)"
+if [ ! -r "$CONF" ] && [ -t 0 ]; then
+    # First setup: the parent app must be on the parent's own PC first.
+    printf '\n\033[1mInstall Blighter Restrictor on your OWN PC first.\033[0m\n'
+    echo "This setup is for the child's PC.  You need the parent app to finish"
+    echo "connecting to it and to manage it."
+    read -r -p "Have you already installed the parent app on your own PC? [y/N] " a
+    [[ "$a" =~ ^[Yy] ]] || { echo "Nothing has been changed.  Install the parent app first, then run this again."; exit 0; }
+fi
+id "$CHILD" >/dev/null 2>&1 || die "User '$CHILD' does not exist on this PC"
 [ "$CHILD" != "$ADMIN" ] && [ "$CHILD" != root ] || die "'$CHILD' cannot be the child account"
 if id -nG "$CHILD" | tr ' ' '\n' | grep -qxE 'sudo|admin|wheel'; then
     warn "'$CHILD' is an administrator (sudo group) and could undo all of this."
@@ -130,10 +242,10 @@ squid_other_use() {
 }
 other=$(squid_other_use)
 if [ -n "$other" ] && [ "$REPLACE_SQUID" != yes ]; then
-    warn "Squid (web filter software) on this laptop looks set up by something else:"
+    warn "Squid (web filter software) on this PC looks set up by something else:"
     echo "$other"
     echo "Blighter replaces Squid's settings with its own, so anything else using"
-    echo "Squid on this laptop would stop working.  The current squid.conf is saved"
+    echo "Squid on this PC would stop working.  The current squid.conf is saved"
     echo "first and put back if Blighter is removed."
     if [ -t 0 ]; then
         read -r -p "Replace Squid's settings? [y/N] " a
@@ -147,7 +259,7 @@ fi
 say "1/7 Recording child account: $CHILD"
 mkdir -p "$CONF_DIR"
 # Home network (printers, NAS...): kept from an earlier setup; otherwise the
-# private (RFC 1918) network the laptop is on now.  The parent app can change it.
+# private (RFC 1918) network the PC is on now.  The parent app can change it.
 old_conf() { [ -r "$CONF" ] && sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$CONF" | tail -1; }
 HOME_ALLOWED=$(old_conf HOME_NET_ALLOWED || true)
 HOME_NETS=$(old_conf HOME_NETS || true)
@@ -164,10 +276,10 @@ fi
 if [ "$HOME_ALLOWED" = yes ] && [ -n "$HOME_NETS" ]; then
     echo "Home network allowed (printers, file sharing): $HOME_NETS${HOME_NAME:+ ($HOME_NAME)}"
 elif [ "$HOME_ALLOWED" = yes ]; then
-    warn "This laptop is not on a private home network now - set the home network later in the parent app (Rules tab)."
+    warn "This PC is not on a private home network now - set the home network later in the parent app (Rules tab)."
 fi
 cat > "$CONF" <<EOF
-# Blighter Restrictor - which account on this laptop is filtered.
+# Blighter Restrictor - which account on this PC is filtered.
 CHILD_USER="$CHILD"
 # yes = Discord allowed: its web addresses through Squid and outgoing
 # UDP 50000-65535 for voice/video calls.  Changed by the parent app's
@@ -195,33 +307,11 @@ fi
 # Hide it from the login screen.
 mkdir -p /var/lib/AccountsService/users
 printf '[User]\nSystemAccount=true\n' > "/var/lib/AccountsService/users/$ADMIN"
-# The admin may run only the helper as root.
-echo "$ADMIN ALL=(root) NOPASSWD: /usr/sbin/blighter-apply" > "$SUDOERS.tmp"
-chmod 440 "$SUDOERS.tmp"
-visudo -cf "$SUDOERS.tmp" >/dev/null || die "sudoers check failed"
-mv "$SUDOERS.tmp" "$SUDOERS"
+ensure_sudoers
 
 # ------------------------------------------------------------------ 3. SSH ---
 say "3/7 SSH access"
-rm -f "$SSHD_DROPIN"
-mkdir -p /run/sshd
-pw_setting=$(sshd -T -C "user=$ADMIN,host=parent,addr=192.168.0.2" 2>/dev/null \
-        | grep -i '^passwordauthentication' || echo "unknown")
-if ! echo "$pw_setting" | grep -qi ' yes$'; then
-    printf '# Blighter Restrictor: allow password login for the admin account only.\nMatch User %s\n    PasswordAuthentication yes\n    KbdInteractiveAuthentication yes\n' \
-        "$ADMIN" > "$SSHD_DROPIN"
-    sshd -t || { rm -f "$SSHD_DROPIN"; die "sshd rejected the drop-in"; }
-    echo "Password login enabled for '$ADMIN' only."
-else
-    echo "Password login already allowed."
-fi
-svc enable ssh.socket
-svc enable ssh.service
-svc try-reload-or-restart ssh
-svc start ssh.socket
-if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    ufw allow 22/tcp >/dev/null && echo "Opened port 22 in ufw."
-fi
+ensure_ssh
 
 # ---------------------------------------------------------------- 4. Squid ---
 say "4/7 Squid configuration"
@@ -305,8 +395,13 @@ done
 
 # ---------------------------------------------------------------- summary ---
 say "Setup complete"
-echo "Child account : $CHILD"
-echo "Admin account : $ADMIN  (use this login and its password in the parent app)"
-echo "IPv4 address  : $(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -3 | tr '\n' ' ')"
-echo "Tip: reserve this address for the laptop in your router's DHCP settings."
+echo "On your own PC, open Blighter Restrictor, choose Add and enter:"
+printf '  Address       : \033[1;32m%s\033[0m\n' "$(main_ip)"
+echo "  Child account : $CHILD"
+echo "  Admin login   : $ADMIN  (and its password)"
+o=$(other_ips)
+if [ -n "$o" ]; then echo "  (other addresses on this PC: $o)"; fi
+echo "Keep this PC switched on and on your home network until the parent app has connected."
+echo "If the address changes later, the parent app finds this PC again by itself."
+echo "To see these details again:  sudo blighter-setup --details"
 echo "The child must log out and back in for the proxy setting to take effect."

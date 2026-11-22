@@ -29,7 +29,7 @@ on a Windows 10/11 PC instead:
    ```powershell
    powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
    ```
-4. Result: `dist\BlighterRestrictor-Setup-1.2.4.exe`. Install it on the parent's Windows PC.
+4. Result: `dist\BlighterRestrictor-Setup-<version>.exe`. Install it on the parent's Windows PC.
    (Without Inno Setup you get a runnable folder `dist\BlighterRestrictor\` instead.)
 
 ## Licence
@@ -56,6 +56,7 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 |---|---|
 | `common/domains.py` | Domain validation and the Discord switch rules, shared by the app and the PC helpers |
 | `common/blockpage.py` | The neutral error page and Squid header settings, shared by both PC helpers |
+| `common/logtail.py` | Reads the activity log a piece at a time (only new lines), shared by both PC helpers |
 | `parent/blighter_parent/` | The GUI app (Qt / PySide6, Paramiko SSH, keyring) |
 | `parent/packaging/` | Ubuntu launcher, menu entry and package control file |
 | `child/files/usr/sbin/blighter-setup` | One-time PC setup / removal |
@@ -66,7 +67,8 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `child-windows/blighter-system.ps1` | Windows whole-PC firewall, proxy policies, self-repair task |
 | `child-windows/blighter-apply.py` / `.cmd` | Windows helper the app runs over SSH (same commands as Ubuntu's) |
 | `child-windows/squid.conf` | Managed Squid configuration for Squid for Windows |
-| `child-windows/*.cmd` | Double-click install / pause / resume / remove |
+| `child-windows/blighter-details.ps1` | Windows: connection details, repair and password change for a parent |
+| `child-windows/*.cmd` | Double-click install / pause / resume / remove / details (Blighter-Details.cmd) |
 | `build-windows-child.sh` | Builds the Windows child zip |
 | `windows/` | Windows build script, installer definition, icon (parent app) |
 | `LICENSE` | GNU General Public License v3.0 |

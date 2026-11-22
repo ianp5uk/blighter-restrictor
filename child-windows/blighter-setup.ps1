@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
-# Blighter Restrictor - one-time setup of a child's WINDOWS laptop.
+# Blighter Restrictor - one-time setup of a child's WINDOWS PC.
 #
-# Purpose: prepare this laptop so the parent app can manage it over the home
+# Purpose: prepare this PC so the parent app can manage it over the home
 # network.  Safe to run again.  Normally started by the Windows installer
 # BlighterChild-Setup-<ver>.exe (-Gui, no console window: the installer asks
 # every question first and shows this script's progress on its own page), or
@@ -11,7 +11,7 @@
 #      (locked so only administrators can change it) and records the
 #      child's account (child.conf)
 #   3. BEFORE CHANGING ANYTHING ELSE: creates a Windows restore point
-#      ("Before Blighter Restrictor") and saves the laptop's current
+#      ("Before Blighter Restrictor") and saves the PC's current
 #      settings (state\pre-install.json) so removal can put them back
 #   4. installs the tested Squid for Windows (Diladele MSI, downloaded): the
 #      download must carry a valid Diladele B.V. signature (otherwise setup
@@ -26,7 +26,7 @@
 #      over SSH) that the parent app uses
 #   6. installs and starts Windows' own OpenSSH Server
 #   7. replaces squid.conf with the Blighter one (old file backed up)
-#   8. turns on the whole-laptop firewall, the proxy settings and the
+#   8. turns on the whole-PC firewall, the proxy settings and the
 #      self-repair task (blighter-system.ps1 enable)
 #   9. offers to mark the current network as Private (needed for SSH);
 #      the change is recorded so removal can undo it
@@ -38,7 +38,7 @@
 # unfinished setup; running setup again then offers to finish or undo it,
 # and the parent app shows a warning.
 #
-# Removal (-Remove) puts the laptop back as it was before step 3: firewall,
+# Removal (-Remove) puts the PC back as it was before step 3: firewall,
 # proxy and browser settings, network types, and - if setup added them -
 # deletes the blighter account and stops and uninstalls OpenSSH Server and
 # Squid (it asks first; the defaults are "yes"), then deletes its own folder.
@@ -92,7 +92,7 @@ $ErrorActionPreference = "Stop"
 # Progress bars are hidden (they flash on and off and look like a fault);
 # slow steps print their own "still working" lines instead.
 $ProgressPreference    = "SilentlyContinue"
-$Version   = "1.2.5"
+$Version   = "1.2.6"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -269,7 +269,7 @@ function Get-SquidProductCodes {
 }
 
 if ($Remove) {
-    Say "Removing Blighter Restrictor from this laptop"
+    Say "Removing Blighter Restrictor from this PC"
     $pre = $null
     if (Test-Path $PreFile) {
         $pre = Get-Content $PreFile -Raw | ConvertFrom-Json
@@ -385,8 +385,19 @@ if ($Remove) {
 }
 
 # ------------------------------------------------------------ before start ---
+if (-not $Yes -and -not (Test-Path $PreFile)) {
+    # First install: the parent app must be on the parent's own PC first.
+    Write-Host ""
+    Write-Host "  Install Blighter Restrictor on your OWN PC first." -ForegroundColor Yellow
+    Write-Host "  This setup is for the child's PC.  You need the parent app to finish"
+    Write-Host "  connecting to it and to manage it."
+    if (-not (Ask "  Have you already installed the parent app on your own PC?" "n")) {
+        Write-Host "Nothing has been changed.  Install the parent app first, then run this again."
+        exit 0
+    }
+}
 Write-Host ""
-Write-Host "  Blighter Restrictor $Version - child laptop setup" -ForegroundColor Cyan
+Write-Host "  Blighter Restrictor $Version - child PC setup" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  This takes about 15-30 minutes.  The slow steps are:"
 Write-Host "     3/9  restore point                          1-5 minutes"
@@ -395,14 +406,14 @@ Write-Host "     6/9  OpenSSH Server from Windows Update     2-20 minutes"
 Write-Host "     8/9  firewall                               1-3 minutes"
 Write-Host "  During slow steps the window prints a 'still working' line every"
 Write-Host "  30 seconds.  That is normal - please do not close the window."
-Write-Host "  Keep the laptop plugged in and on the home Wi-Fi."
+Write-Host "  Keep the PC plugged in and on the home Wi-Fi."
 Write-Host ""
 Write-Host "  If you need to stop part-way, press Ctrl+C: setup will offer to undo"
-Write-Host "  what it has done so far.  If the laptop is switched off part-way,"
+Write-Host "  what it has done so far.  If the PC is switched off part-way,"
 Write-Host "  run 'Install Blighter Child.cmd' again - it will offer to finish or undo."
 Write-Host ""
 if (Test-Path $Marker) {
-    Warn "An earlier setup on this laptop did not finish (started $(Get-Content $Marker -TotalCount 1))."
+    Warn "An earlier setup on this PC did not finish (started $(Get-Content $Marker -TotalCount 1))."
     if (Ask "Undo what it did, instead of carrying on with setup?" "n") {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "blighter-setup.ps1") -Remove
         exit $LASTEXITCODE
@@ -413,7 +424,7 @@ if (Test-Path $Marker) {
     exit 0
 }
 
-# Stop the laptop going to sleep while setup runs (until this window closes).
+# Stop the PC going to sleep while setup runs (until this window closes).
 try {
     Add-Type -Namespace Blighter -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);'
     [Blighter.Power]::SetThreadExecutionState([uint32]"0x80000001") | Out-Null   # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
@@ -428,7 +439,7 @@ try {
 Step 1 "The child's account" "a few seconds"
 $locals = @(Get-LocalUser | Where-Object { $_.Enabled -and $_.Name -ne $Admin -and $_.Name -notin @("Administrator", "Guest", "DefaultAccount", "WDAGUtilityAccount") })
 if (-not $Child) {
-    Write-Host "Accounts on this laptop:"
+    Write-Host "Accounts on this PC:"
     $locals | ForEach-Object { Write-Host ("   {0,-20} {1}" -f $_.Name, $_.FullName) }
     $Child = Read-Host "Which account is the child's? (type the name in the first column)"
 }
@@ -437,12 +448,12 @@ if (-not $Child) { Die "No account given." }
 if ($Child -eq $Admin) { Die "'$Admin' cannot be the child's account." }
 try {
     $childSid = (New-Object Security.Principal.NTAccount($Child)).Translate([Security.Principal.SecurityIdentifier]).Value
-} catch { Die "There is no account called '$Child' on this laptop." }
+} catch { Die "There is no account called '$Child' on this PC." }
 $isAdmin = (Get-AdminSids) -contains $childSid
 if ($isAdmin) {
     Write-Host ""
     Write-Host "  *****************************************************************" -ForegroundColor Red
-    Write-Host "  '$Child' is an ADMINISTRATOR on this laptop." -ForegroundColor Red
+    Write-Host "  '$Child' is an ADMINISTRATOR on this PC." -ForegroundColor Red
     Write-Host "  An administrator can switch off the firewall, stop Squid, delete" -ForegroundColor Red
     Write-Host "  the scheduled task or uninstall all of this.  Blighter Restrictor" -ForegroundColor Red
     Write-Host "  will still filter, and the parent app will show what is in force," -ForegroundColor Red
@@ -460,7 +471,7 @@ if ($isAdmin) {
 # here, before anything is changed).
 $squidOwner = Get-SquidOwner
 if ($squidOwner -eq "other" -and -not $ReplaceSquid) {
-    Write-Host "Squid (web filter software) is already installed on this laptop, but it wasn't"
+    Write-Host "Squid (web filter software) is already installed on this PC, but it wasn't"
     Write-Host "installed by Blighter.  Something else may be using it.  Blighter needs to replace"
     Write-Host "it with the version it was tested with; its settings are saved first."
     if ($Yes -or -not (Ask "Replace Squid?" "n")) {
@@ -475,8 +486,9 @@ if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest | Out-Nul
 Lock-Folder $Dest
 if ((Resolve-Path $Src).Path.TrimEnd('\') -ne (Resolve-Path $Dest).Path.TrimEnd('\')) {
     foreach ($item in "blighter-apply.py", "blighter-apply.cmd", "blighter-system.ps1", "blighter-setup.ps1",
-                      "domains.py", "blockpage.py", "squid.conf", "python", "LICENSE.txt", "Remove Blighter Child.cmd",
-                      "Pause Blighter Child.cmd", "Resume Blighter Child.cmd") {
+                      "domains.py", "blockpage.py", "logtail.py", "squid.conf", "python", "LICENSE.txt",
+                      "Remove Blighter Child.cmd", "Pause Blighter Child.cmd", "Resume Blighter Child.cmd",
+                      "blighter-details.ps1", "Blighter-Details.cmd") {
         $from = Join-Path $Src $item
         if (-not (Test-Path $from)) { Die "Missing file $item next to this script - unzip the whole package first." }
         Copy-Item $from $Dest -Recurse -Force
@@ -493,7 +505,7 @@ if ((Test-Path $oldConf) -and (Select-String -Path $oldConf -Pattern '^\s*ALLOW_
 if ($NoVoice) { $voice = "no" }
 Write-Host ("Discord: {0} (the parent app can change this)." -f $(if ($voice -eq "yes") { "allowed" } else { "blocked" }))
 # Home network (printers, NAS...): kept from an earlier setup; otherwise the
-# private (RFC 1918) network the laptop is on now.  The parent app can change it.
+# private (RFC 1918) network the PC is on now.  The parent app can change it.
 function Get-OldConf([string]$key) {
     if (-not (Test-Path $oldConf)) { return $null }
     $m = Select-String -Path $oldConf -Pattern ('^\s*' + $key + '\s*=\s*"?([^"]*)"?\s*$') | Select-Object -Last 1
@@ -513,11 +525,11 @@ if (-not $homeAllowed) {
     } catch { $ErrorActionPreference = "Stop" }
 }
 if ($homeAllowed -eq "yes" -and $homeNets) { Write-Host "Home network allowed (printers, file sharing): $homeNets$(if ($homeName) { " ($homeName)" })" }
-elseif ($homeAllowed -eq "yes") { Warn "This laptop is not on a private home network now - set the home network later in the parent app (Rules tab)." }
+elseif ($homeAllowed -eq "yes") { Warn "This PC is not on a private home network now - set the home network later in the parent app (Rules tab)." }
 @"
-# Blighter Restrictor - which account on this laptop is the child's.
+# Blighter Restrictor - which account on this PC is the child's.
 # Written by blighter-setup.ps1 $Version.  On Windows the firewall filters the
-# whole laptop; CHILD_USER is used for the proxy setting and admin warnings.
+# whole PC; CHILD_USER is used for the proxy setting and admin warnings.
 CHILD_USER="$Child"
 CHILD_SID="$childSid"
 # yes = Discord allowed: its web addresses through Squid and outgoing
@@ -531,7 +543,7 @@ HOME_NETS="$homeNets"
 HOME_NET_NAME="$homeName"
 "@ | Set-Content -Path (Join-Path $Dest "child.conf") -Encoding ASCII
 & (Join-Path $Dest "python\python.exe") -I -c "print('Bundled Python OK')"
-if ($LASTEXITCODE -ne 0) { Die "The bundled Python does not run on this laptop." }
+if ($LASTEXITCODE -ne 0) { Die "The bundled Python does not run on this PC." }
 
 # ------------------------------------------- 3. restore point and backup ---
 Step 3 "Restore point and a record of the current settings" "1-5 minutes"
@@ -572,7 +584,7 @@ function Copy-IfThere([string]$from, [string]$to) {
 }
 function Remove-SquidExtras {
     # The MSI opens port 3128 to the local network and adds two desktop
-    # shortcuts.  Blighter's Squid only listens on the laptop itself.
+    # shortcuts.  Blighter's Squid only listens on the PC itself.
     Get-NetFirewallRule -DisplayName "Squid Cache Server" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
     foreach ($d in @([Environment]::GetFolderPath("CommonDesktopDirectory"), [Environment]::GetFolderPath("Desktop"))) {
         foreach ($n in "Squid Terminal.lnk", "Squid Server Tray.lnk") {
@@ -607,7 +619,7 @@ if ($root -and $owner -eq "blighter" -and $recorded -eq $SquidSha256) {
             param($url, $file)
             $ErrorActionPreference = "Stop"
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            # Direct, not through the laptop's proxy setting (Squid would block it).
+            # Direct, not through the PC's proxy setting (Squid would block it).
             $wc = New-Object Net.WebClient
             $wc.Proxy = $null
             $wc.DownloadFile($url, $file)
@@ -726,7 +738,7 @@ if ($setPw -and $Yes) {
         if ($user) { Set-LocalUser -Name $Admin -Password $p1 }
         else { New-LocalUser -Name $Admin -Password $p1 -FullName "Blighter Restrictor" -Description "Used by the Blighter Restrictor parent app" | Out-Null }
     } catch [Microsoft.PowerShell.Commands.InvalidPasswordException] {
-        Die "Windows rejected the password for '$Admin'.  On this laptop it may need upper and lower case letters, a digit and a symbol, and it must not contain the word '$Admin'.  Run setup again with a different password."
+        Die "Windows rejected the password for '$Admin'.  On this PC it may need upper and lower case letters, a digit and a symbol, and it must not contain the word '$Admin'.  Run setup again with a different password."
     } catch { Die "Could not set the password: $($_.Exception.Message)" }
     $setPw = $false
 }
@@ -737,7 +749,7 @@ if ($setPw) {
         $b1 = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p1))
         $b2 = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p2))
         if ($b1 -ne $b2) { Write-Host "They do not match - try again."; continue }
-        if ($b1.Length -lt 10) { Write-Host "Use at least 10 characters - this account has full control of the laptop."; continue }
+        if ($b1.Length -lt 10) { Write-Host "Use at least 10 characters - this account has full control of the PC."; continue }
         try {
             if ($user) { Set-LocalUser -Name $Admin -Password $p1 }
             else { New-LocalUser -Name $Admin -Password $p1 -FullName "Blighter Restrictor" -Description "Used by the Blighter Restrictor parent app" | Out-Null }
@@ -815,7 +827,7 @@ if (-not (Get-Process squid -ErrorAction SilentlyContinue)) { Warn "squid.exe is
 Write-Host "Squid configured (DNS servers: $dnsList)."
 
 # --------------------------------------------- 8. firewall, proxy, repair ---
-Step 8 "Firewall (whole laptop), proxy settings and self-repair task" "1-3 minutes"
+Step 8 "Firewall (whole PC), proxy settings and self-repair task" "1-3 minutes"
 $code = Start-Slow "setting up the firewall" "powershell.exe" "-NoProfile -ExecutionPolicy Bypass -File `"$System`" enable"
 if ($code -ne 0) { Die "Firewall setup failed - see the messages above." }
 
@@ -852,7 +864,7 @@ $SetupDone = $true
             Tag ("failed undo={0} rerun={1}" -f [int](Test-Path $PreFile), [int]$WasInstalled)
         } elseif (Test-Path $PreFile) {
             $undo = $true
-            Write-Host "Undoing removes Blighter Restrictor completely and puts the laptop back as it was"
+            Write-Host "Undoing removes Blighter Restrictor completely and puts the PC back as it was"
             Write-Host "before Blighter was first installed (as 'Remove Blighter Child.cmd' does)."
             try { $undo = Ask "Undo now (recommended)?" "y" } catch { $undo = $true }
             if ($undo) {
@@ -863,30 +875,40 @@ $SetupDone = $true
                 Write-Host "or 'Remove Blighter Child.cmd' in $Dest to undo it."
             }
         } else {
-            Write-Host "Nothing on the laptop had been changed yet, apart from copying files to $Dest."
+            Write-Host "Nothing on the PC had been changed yet, apart from copying files to $Dest."
         }
     }
 }
 
 # ---------------------------------------------------------------- summary ---
 Say "Setup complete"
+# The address to type into the parent app: the home network's (adapter with
+# a default route, private address) first.
+$routeIfs = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | ForEach-Object { $_.ifIndex } | Sort-Object -Unique)
 $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
          Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
+         Sort-Object -Property @{ Expression = { [int]($routeIfs -contains $_.InterfaceIndex) * 2 +
+                                                 [int]($_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)') } ; Descending = $true } |
          ForEach-Object { $_.IPAddress })
+$mainIp = if ($ips.Count) { $ips[0] } else { "" }
 Tag ("result child={0}" -f $Child)
 Tag ("result admin={0}" -f $Admin)
-Tag ("result ip={0}" -f ($ips -join ' '))
+Tag ("result ip={0}" -f $mainIp)
 if ($script:SquidChanged) { Tag "squid-updated" }
-Write-Host "Child account : $Child$(if ($isAdmin) { '   (ADMINISTRATOR - see warning above)' })"
-Write-Host "Admin account : $Admin  (use this login and its password in the parent app)"
-Write-Host "IPv4 address  : $($ips -join ' ')"
-Write-Host "Tip: reserve this address for the laptop in your router's DHCP settings."
+Write-Host "On your own PC, open Blighter Restrictor, choose Add and enter:"
+Write-Host "  Address       : $mainIp" -ForegroundColor Green
+Write-Host "  Child account : $Child$(if ($isAdmin) { '   (ADMINISTRATOR - see warning above)' })"
+Write-Host "  Admin login   : $Admin  (and its password)"
+Write-Host "Keep this PC switched on and on your home network until the parent app has connected."
+Write-Host "If the address changes later, the parent app finds this PC again by itself."
+Write-Host "To see these details again: Windows key + R, then C:\ProgramData\BlighterChild\Blighter-Details.cmd"
 Write-Host ""
-Write-Host "IMPORTANT: on Windows the filter applies to EVERY account on this laptop,"
+Write-Host "IMPORTANT: on Windows the filter applies to EVERY account on this PC,"
 Write-Host "including yours.  The child should sign out and back in once."
 Write-Host ""
 Write-Host "If something stops working, run 'Pause Blighter Child.cmd' in $Dest"
-Write-Host "to switch filtering off without uninstalling (and 'Resume ...' to switch it on)."
+Write-Host "to switch Blighter off without uninstalling (activity is not recorded while it is"
+Write-Host "off); 'Resume ...' or the parent app's Resume filtering switches it on again."
 Write-Host "'Remove Blighter Child.cmd' there undoes everything."
 if ($script:SquidChanged) {
     Write-Host ""

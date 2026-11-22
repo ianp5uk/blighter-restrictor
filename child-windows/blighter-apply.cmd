@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem Blighter Restrictor - launcher for the Windows child-laptop helper.
+rem Blighter Restrictor - launcher for the Windows child-PC helper.
 rem
 rem Purpose: the command the parent app runs over SSH, e.g.
 rem   C:\ProgramData\BlighterChild\blighter-apply.cmd status

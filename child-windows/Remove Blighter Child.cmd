@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem Blighter Restrictor - remove the child component from a Windows laptop.
+rem Blighter Restrictor - remove the child component from a Windows PC.
 rem
 rem Purpose: ask for administrator rights and run
 rem "blighter-setup.ps1 -Remove": firewall back to Windows defaults, proxy

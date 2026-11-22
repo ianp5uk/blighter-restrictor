@@ -1,11 +1,26 @@
 # -----------------------------------------------------------------------------
-# Blighter Restrictor - "Add / Edit child" dialog and password prompt.
+# Blighter Restrictor - "Add / Edit child", "Reconnect" and the password prompt.
 #
-# Purpose: enter a child's name, laptop IPv4 address, their username on the
-# laptop (the account that is filtered), the admin login created by
-# blighter-setup, its password (saved to the keyring) and the SSH port.
-# "Test connection" logs in and asks the laptop for its status before saving.
-# A second entry for the same laptop (same IP and child username) is refused.
+# Purpose:
+#   ChildDialog      enter a child's name, the address shown at the end of
+#                    setup on their PC, their username on the PC (the account
+#                    that is filtered), the admin login created by the setup,
+#                    its password (saved to the keyring) and the SSH port.
+#                    "Test connection" logs in and asks the PC for its status.
+#                    The PC's SSH identity is remembered from the first
+#                    connection, so the app can find the PC again by itself
+#                    when its address changes (no router settings needed).
+#                    A second entry for the same PC is refused.
+#   ReconnectDialog  when the app cannot find a child's PC: "Find
+#                    automatically" searches the home network for it; or
+#                    enter the address shown on the PC (Blighter-Details.cmd
+#                    on Windows, "sudo blighter-setup --details" on Ubuntu)
+#                    and optionally a new password.  If the computer at that
+#                    address has a different identity (Blighter reinstalled,
+#                    or a new PC) the parent must confirm before the saved
+#                    identity is replaced.  The child's name, username and
+#                    the PC's own rules and activity log are not changed.
+#   ask_password     asks for a password that is not saved.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -16,6 +31,7 @@
 # LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
 
+import dataclasses
 import ipaddress
 import re
 
@@ -23,10 +39,16 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayo
                                QInputDialog, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QSpinBox, QVBoxLayout)
 
+from . import discovery
 from .config_store import Child
-from .remote import Remote, forget_host_key
+from .remote import IdentityChanged, Remote
 from .shared import admin_warning_html, same_user
 from .workers import run_bg
+
+WHERE_TO_FIND = ("To see the address on the child's PC:<br>"
+                 "&nbsp;&nbsp;<b>Windows</b>: press Windows key + R and type<br>"
+                 "&nbsp;&nbsp;&nbsp;&nbsp;<b><nobr>C:\\ProgramData\\BlighterChild\\Blighter-Details.cmd</nobr></b><br>"
+                 "&nbsp;&nbsp;<b>Ubuntu</b>: open a Terminal and type <b><nobr>sudo blighter-setup --details</nobr></b>")
 
 # Ubuntu usernames, plus Windows local account names (letters, digits,
 # spaces, dots, hyphens, underscores; up to 20 characters on Windows).
@@ -43,9 +65,9 @@ class ChildDialog(QDialog):
 
         self.name = QLineEdit(child.name if child else "")
         self.ip = QLineEdit(child.ip if child else "")
-        self.ip.setPlaceholderText("e.g. 192.168.1.50")
+        self.ip.setPlaceholderText("shown at the end of setup on the child's PC, e.g. 192.168.1.50")
         self.child_user = QLineEdit(child.child_user if child else "")
-        self.child_user.setPlaceholderText("the child's login name on their laptop")
+        self.child_user.setPlaceholderText("the child's login name on their PC")
         self.admin_user = QLineEdit(child.admin_user if child else "blighter")
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
@@ -57,16 +79,15 @@ class ChildDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Child's name:", self.name)
-        form.addRow("Laptop IPv4 address:", self.ip)
+        form.addRow("PC address:", self.ip)
         form.addRow("Child's username:", self.child_user)
         form.addRow("Admin login:", self.admin_user)
         form.addRow("Admin password:", self.password)
         form.addRow("SSH port:", self.port)
 
-        hint = QLabel("The child's username must match the one given to the Blighter "
-                      "setup on the laptop (<b>sudo blighter-setup</b> on Ubuntu, "
-                      "<b>Install Blighter Child.cmd</b> on Windows).  Tip: reserve the "
-                      "laptop's IP address in your router so it does not change.")
+        hint = QLabel("Enter the address, username and login shown at the end of the Blighter "
+                      "setup on the child's PC.  You only need to do this once: if the PC's "
+                      "address changes later, the app finds it again by itself.")
         hint.setWordWrap(True)
 
         self.result_label = QLabel("")
@@ -75,12 +96,8 @@ class ChildDialog(QDialog):
         test.clicked.connect(self._test)
         row = QHBoxLayout()
         row.addWidget(test)
-        if child:
-            forget = QPushButton("Forget host key")
-            forget.setToolTip("Use after reinstalling the laptop's operating system")
-            forget.clicked.connect(self._forget)
-            row.addWidget(forget)
         row.addStretch()
+        self._tested = None          # (address, identity) from a successful Test
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._save)
@@ -113,10 +130,13 @@ class ChildDialog(QDialog):
         c = Child(name=name, ip=ip, child_user=cu, admin_user=au, port=self.port.value())
         if self.original:
             c.id = self.original.id
+            c.host_key = self.original.host_key
+        if not c.host_key and self._tested and self._tested[0] == ip:
+            c.host_key = self._tested[1]
         dup = self.store.find_duplicate(c)
         if dup:
             raise ValueError(f"{dup.name} ({dup.ip}, user {dup.child_user}) is already in the list.  "
-                             "Each child's laptop can only be listed once - edit that entry instead.")
+                             "Each child's PC can only be listed once - edit that entry instead.")
         pw = self.password.text() or (self.store.get_password(self.original) if self.original else "")
         if not pw:
             raise ValueError("Please enter the admin password.")
@@ -128,33 +148,37 @@ class ChildDialog(QDialog):
         except ValueError as e:
             self.result_label.setText(f"<span style='color:#c0392b'>{e}</span>")
             return
-        self.result_label.setText("Connecting and checking the laptop (this can take up to a minute)…")
+        self.result_label.setText("Connecting and checking the PC (this can take up to a minute)…")
 
         def job():
-            r = Remote(child, pw, self.store.known_hosts)
+            r = Remote(child, pw, self.store.known_hosts, discover=False)
             try:
-                return r.status()
+                st = r.status()
+                return st, child.ip, child.host_key
             finally:
                 r.close()
 
-        def ok(st):
+        def ok(res):
+            st, ip, key = res
+            self._tested = (ip, key)
             system = "Windows" if st.get("platform") == "windows" else "Ubuntu"
             msg = (f"<span style='color:#27ae60'><b>Connected</b></span> ({system}). "
-                   f"Laptop filters user <b>{st.get('child_user')}</b>; "
+                   f"The PC filters user <b>{st.get('child_user')}</b>; "
                    f"{st.get('squid_version')}; Squid "
                    f"{'running' if st.get('squid_running') else '<b>NOT running</b>'}; firewall "
                    f"{'active' if st.get('firewall_active') else '<b>NOT active</b>'}.")
             if not same_user(st.get("child_user"), child.child_user, st.get("platform")):
-                msg += (f"<br><span style='color:#c0392b'>Warning: the laptop was set up for "
+                msg += (f"<br><span style='color:#c0392b'>Warning: the PC was set up for "
                         f"'{st.get('child_user')}', not '{child.child_user}'.</span>")
             msg += admin_warning_html(st)
             self.result_label.setText(msg)
 
-        run_bg(job, ok, lambda m: self.result_label.setText(f"<span style='color:#c0392b'>{m}</span>"))
+        def err(m):
+            if self.original:
+                m += "  (If the PC was reinstalled, close this and use Reconnect.)"
+            self.result_label.setText(f"<span style='color:#c0392b'>{m}</span>")
 
-    def _forget(self):
-        forget_host_key(self.store.known_hosts, self.original.ip, self.original.port)
-        self.result_label.setText("Host key forgotten - it will be learned again on next connection.")
+        run_bg(job, ok, err)
 
     def _save(self):
         try:
@@ -172,9 +196,151 @@ class ChildDialog(QDialog):
         self.accept()
 
 
+class ReconnectDialog(QDialog):
+    """Find a child's PC again, or connect it at a new address / identity."""
+
+    def __init__(self, store, child, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.child = child
+        self.new_key = ""               # identity offered at the address, if different
+        self.setWindowTitle(f"Reconnect {child.name}'s PC")
+        self.setMinimumWidth(560)
+
+        intro = QLabel(f"Use this if the app cannot find <b>{child.name}</b>'s PC, or after Blighter was "
+                       f"reinstalled on it.  {child.name}'s name, username, the PC's rules and its "
+                       "activity log are not changed.")
+        intro.setWordWrap(True)
+        self.btn_find = QPushButton("Find automatically")
+        self.btn_find.setToolTip("Search the home network for this PC (a few seconds)")
+        self.btn_find.clicked.connect(self._find)
+        if not child.host_key:
+            self.btn_find.setEnabled(False)
+            self.btn_find.setToolTip("Not possible yet: the app has not connected to this PC before.  "
+                                     "Enter its address below.")
+        where = QLabel("Or enter the address shown on the child's PC.<br>" + WHERE_TO_FIND)
+        where.setWordWrap(True)
+        self.ip = QLineEdit(child.ip)
+        self.password = QLineEdit()
+        self.password.setEchoMode(QLineEdit.Password)
+        self.password.setPlaceholderText("leave blank to keep the saved password")
+        form = QFormLayout()
+        form.addRow("PC address:", self.ip)
+        form.addRow("Admin password:", self.password)
+        self.btn_connect = QPushButton("Connect")
+        self.btn_connect.clicked.connect(lambda: self._connect(replace=False))
+        self.btn_replace = QPushButton("This is the right PC - connect and remember it")
+        self.btn_replace.clicked.connect(lambda: self._connect(replace=True))
+        self.btn_replace.hide()
+        self.message = QLabel("")
+        self.message.setWordWrap(True)
+        row = QHBoxLayout()
+        row.addWidget(self.btn_connect)
+        row.addWidget(self.btn_replace)
+        row.addStretch()
+        close = QDialogButtonBox(QDialogButtonBox.Close)
+        close.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(intro)
+        lay.addWidget(self.btn_find)
+        lay.addSpacing(8)
+        lay.addWidget(where)
+        lay.addLayout(form)
+        lay.addLayout(row)
+        lay.addWidget(self.message)
+        lay.addWidget(close)
+
+    def _busy(self, on):
+        for b in (self.btn_find, self.btn_connect, self.btn_replace):
+            b.setEnabled(not on and (b is not self.btn_find or bool(self.child.host_key)))
+
+    def _say(self, text, colour=None):
+        self.message.setText(f"<span style='color:{colour}'>{text}</span>" if colour else text)
+
+    def _find(self):
+        c = self.child
+        self._busy(True)
+        self._say(f"Searching the home network for {c.name}'s PC…")
+
+        def ok(ip):
+            self._busy(False)
+            if not ip:
+                self._say(f"{c.name}'s PC was not found.  Make sure it is switched on and connected to the "
+                          "same home network, or enter its address below.", "#c0392b")
+                return
+            c.ip = ip
+            self.ip.setText(ip)
+            self.store.save()
+            self._say(f"Found {c.name}'s PC at {ip}.", "#27ae60")
+            self.accept()
+
+        run_bg(lambda: discovery.find_pc(c.host_key, c.ip, c.port), ok,
+               lambda m: (self._busy(False), self._say(m, "#c0392b")))
+
+    def _connect(self, replace):
+        c = self.child
+        ip = self.ip.text().strip()
+        try:
+            ipaddress.IPv4Address(ip)
+        except ValueError:
+            self._say(f"'{ip}' is not a valid address.", "#c0392b")
+            return
+        pw = self.password.text() or self.store.get_password(c)
+        if not pw:
+            self._say("Please enter the admin password.", "#c0392b")
+            return
+        trial = dataclasses.replace(c, ip=ip, host_key="" if replace else c.host_key)
+        self._busy(True)
+        self._say("Connecting (this can take up to a minute)…")
+
+        def job():
+            r = Remote(trial, pw, self.store.known_hosts, discover=False)
+            try:
+                return r.status()
+            finally:
+                r.close()
+
+        def ok(st):
+            self._busy(False)
+            if not same_user(st.get("child_user"), c.child_user, st.get("platform")):
+                self._say(f"Connected, but this PC is set up for '{st.get('child_user')}', not "
+                          f"'{c.child_user}'.  Nothing was changed.  If it is the right PC, use Edit to "
+                          "change the child's username first.", "#c0392b")
+                return
+            c.ip, c.host_key = trial.ip, trial.host_key
+            if self.password.text():
+                self.store.set_password(c, self.password.text())
+            self.store.save()
+            self.accept()
+
+        def err(m, e_type=None):
+            self._busy(False)
+            self._say(m, "#c0392b")
+
+        def job_wrapped():
+            try:
+                return ("ok", job())
+            except IdentityChanged as e:
+                return ("identity", str(e))
+
+        def done(res):
+            kind, value = res
+            if kind == "ok":
+                ok(value)
+                return
+            self._busy(False)
+            self.btn_replace.show()
+            self._say(f"The computer at {ip} is not the one saved as {c.name}'s PC.<br>This happens after "
+                      f"Blighter is reinstalled on it, or with a different computer.  Press the button below "
+                      f"only if this really is {c.name}'s PC.", "#c0392b")
+
+        run_bg(job_wrapped, done, err)
+
+
 def ask_password(parent, store, child):
     pw, ok = QInputDialog.getText(parent, "Password needed",
-                                  f"Admin password for {child.name}'s laptop ({child.admin_user}@{child.ip}):",
+                                  f"Admin password for {child.name}'s PC ({child.admin_user}@{child.ip}):",
                                   QLineEdit.Password)
     if ok and pw:
         store.set_password(child, pw)

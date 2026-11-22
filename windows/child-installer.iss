@@ -1,16 +1,22 @@
 ; -----------------------------------------------------------------------------
-; Blighter Restrictor - Windows CHILD laptop installer (Inno Setup 6.3+).
+; Blighter Restrictor - Windows CHILD PC installer (Inno Setup 6.3+).
 ;
 ; Purpose: one BlighterChild-Setup-<ver>.exe that sets up a child's Windows
-; 10/11 laptop with no console window.  It asks every question on normal
+; 10/11 PC with no console window.  It asks every question on normal
 ; installer pages first (child's account, the "blighter" administrator
 ; password, the home network, and - only if Squid was installed by something
 ; else - whether to replace Squid), then runs blighter-setup.ps1 -Gui hidden
 ; and shows its progress (step n of 9) on an installer page.  If setup fails
 ; it shows the reason and offers to undo.  The Finished page shows what to
 ; type into the parent app.  Removal is through Settings > Apps (runs
-; blighter-setup.ps1 -Remove -Yes).  Pause / Resume filtering are in the
-; Start menu (administrator only).
+; blighter-setup.ps1 -Remove -Yes).
+; The first page warns that the parent app must be installed on the
+; parent's own PC FIRST and asks for confirmation before going on.
+; There are deliberately no Start menu or desktop shortcuts (since 1.2.6), so
+; nothing catches the child's eye.  The parent's tools are in
+; C:\ProgramData\BlighterChild: Blighter-Details.cmd (the address for the
+; parent app, connection repair, password change; Windows key + R opens it)
+; and the Pause / Resume / Remove .cmd files.
 ; The child package (helper, scripts, embedded Python) is carried inside as
 ; blighter-child-package.zip and unpacked to a temporary folder; the setup
 ; script copies it to C:\ProgramData\BlighterChild.  Squid is downloaded by
@@ -52,7 +58,7 @@ OutputDir=..\dist
 OutputBaseFilename=BlighterChild-Setup-{#AppVersion}
 SetupIconFile=blighter.ico
 LicenseFile=..\LICENSE
-UninstallDisplayName=Blighter Child (web filter for this laptop)
+UninstallDisplayName=Blighter Child (web filter for this PC)
 UninstallDisplayIcon={app}\blighter.ico
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -64,8 +70,8 @@ CloseApplications=no
 SetupLogging=yes
 
 [Messages]
-WelcomeLabel2=This sets up Blighter Restrictor on your child's laptop, so you can control and see their web use from the Blighter Restrictor app on your own PC.%n%nRun it on the child's laptop, signed in as a parent (administrator) account. It takes about 5-15 minutes and needs the internet. Keep the laptop plugged in and on your home Wi-Fi.
-FinishedHeadingLabel=Blighter is set up on this laptop
+WelcomeLabel2=This sets up Blighter Restrictor on your child's PC, so you can control and see their web use from the Blighter Restrictor app on your own PC.%n%nIMPORTANT: install the Blighter Restrictor app on your OWN PC first. This installer is for the child's PC; you need the parent app to finish connecting and to manage it.%n%nRun it on the child's PC, signed in as a parent (administrator) account. It takes about 5-15 minutes and needs the internet. Keep the PC plugged in and on your home network.
+FinishedHeadingLabel=Blighter is set up on this PC
 
 [Files]
 Source: "..\dist\blighter-child-package.zip"; Flags: dontcopy
@@ -74,9 +80,11 @@ Source: "..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "blighter.ico"; DestDir: "{app}"; Flags: ignoreversion
 
-[Icons]
-Name: "{commonprograms}\Blighter Child\Pause filtering (parent)"; Filename: "{commonappdata}\BlighterChild\Pause Blighter Child.cmd"; IconFilename: "{app}\blighter.ico"
-Name: "{commonprograms}\Blighter Child\Resume filtering (parent)"; Filename: "{commonappdata}\BlighterChild\Resume Blighter Child.cmd"; IconFilename: "{app}\blighter.ico"
+[InstallDelete]
+; Start menu shortcuts made by 1.2.5 and earlier (removed so nothing catches the child's eye).
+Type: files; Name: "{commonprograms}\Blighter Child\Pause filtering (parent).lnk"
+Type: files; Name: "{commonprograms}\Blighter Child\Resume filtering (parent).lnk"
+Type: dirifempty; Name: "{commonprograms}\Blighter Child"
 
 [Code]
 const
@@ -162,8 +170,8 @@ begin
   Result := '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '" ' + Extra;
 end;
 
-{ Ask the setup script for the laptop's accounts, Squid owner, networks. }
-procedure QueryLaptop;
+{ Ask the setup script for the PC's accounts, Squid owner, networks. }
+procedure QueryPC;
 var
   Output: TExecOutput;
   Code, I, N, P: Integer;
@@ -264,9 +272,9 @@ begin
     Result := False;
     Exit;
   end;
-  QueryLaptop;
+  QueryPC;
   if Incomplete then begin
-    R := SuppressibleMsgBox('An earlier Blighter setup on this laptop did not finish.' + #13#10#13#10 +
+    R := SuppressibleMsgBox('An earlier Blighter setup on this PC did not finish.' + #13#10#13#10 +
       'Yes - carry on and finish it (recommended)' + #13#10 +
       'No - undo what it did and remove Blighter' + #13#10 +
       'Cancel - leave it for now', mbConfirmation, MB_YESNOCANCEL, IDYES);
@@ -321,7 +329,7 @@ begin
   { Child's account }
   AccountPage := CreateCustomPage(wpLicense, 'The child''s account',
     'Which Windows account does your child sign in with?');
-  T := AddLabel(AccountPage, 'Choose the account your child uses on this laptop.  Blighter filters the web for the whole laptop; this account is used for the warnings below and in the parent app.', 0);
+  T := AddLabel(AccountPage, 'Choose the account your child uses on this PC.  Blighter filters the web for the whole PC; this account is used for the warnings below and in the parent app.', 0);
   AccountCombo := TNewComboBox.Create(AccountPage);
   AccountCombo.Parent := AccountPage.Surface;
   AccountCombo.Style := csDropDownList;
@@ -334,7 +342,7 @@ begin
       AccountCombo.Items.Add(AccNames[I]);
   end;
   AccountCombo.OnChange := @AccountChanged;
-  AdminWarn := AddLabel(AccountPage, 'This account is an ADMINISTRATOR on this laptop.  An administrator can switch Blighter off.  Blighter will still filter, but it cannot stop an administrator who goes looking.' + #13#10#13#10 +
+  AdminWarn := AddLabel(AccountPage, 'This account is an ADMINISTRATOR on this PC.  An administrator can switch Blighter off.  Blighter will still filter, but it cannot stop an administrator who goes looking.' + #13#10#13#10 +
     'To fix it: keep your own (parent) administrator account, then in Settings > Accounts > Other users, change the child''s account to "Standard user".',
     AccountCombo.Top + AccountCombo.Height + ScaleY(12));
   AdminWarn.Font.Color := clRed;
@@ -349,7 +357,7 @@ begin
   { Administrator password }
   PasswordPage := CreateCustomPage(AccountPage.ID, 'Password for the parent app',
     'Blighter adds a hidden administrator account called "blighter".');
-  T := AddLabel(PasswordPage, 'The Blighter Restrictor app on your PC signs in to this laptop with the "blighter" account and this password.  Use at least 10 characters, and write it down - you will type it into the parent app.', 0);
+  T := AddLabel(PasswordPage, 'The Blighter Restrictor app on your PC signs in to this PC with the "blighter" account and this password.  Use at least 10 characters, and write it down - you will type it into the parent app.', 0);
   Y := T.Top + T.Height + ScaleY(10);
   KeepPw := TNewCheckBox.Create(PasswordPage);
   KeepPw.Parent := PasswordPage.Surface;
@@ -374,7 +382,7 @@ begin
 
   { Home network }
   NetworkPage := CreateCustomPage(PasswordPage.ID, 'Home network',
-    'The parent app can only reach this laptop on a network Windows calls "Private".');
+    'The parent app can only reach this PC on a network Windows calls "Private".');
   T := AddLabel(NetworkPage, 'Windows calls this network "Public": ' + PublicNets + #13#10#13#10 +
     'If this is your home network, Blighter will mark it "Private" so the parent app can connect.  (Removing Blighter sets it back.)', 0);
   MarkPrivate := TNewCheckBox.Create(NetworkPage);
@@ -386,8 +394,8 @@ begin
 
   { Existing Squid (only when another program installed it) }
   SquidPage := CreateCustomPage(NetworkPage.ID, 'Squid is already installed',
-    'Squid (web filter software) is already on this laptop.');
-  T := AddLabel(SquidPage, 'Squid is already installed on this laptop, but it wasn''t installed by Blighter.  Something else may be using it.' + #13#10#13#10 +
+    'Squid (web filter software) is already on this PC.');
+  T := AddLabel(SquidPage, 'Squid is already installed on this PC, but it wasn''t installed by Blighter.  Something else may be using it.' + #13#10#13#10 +
     'Blighter needs to replace it with the version it was tested with.  Squid''s current settings will be saved to C:\ProgramData\BlighterChild\backup\squid-before-blighter\ first.', 0);
   ReplaceRadio := TNewRadioButton.Create(SquidPage);
   ReplaceRadio.Parent := SquidPage.Surface;
@@ -402,7 +410,7 @@ begin
   CancelRadio.Checked := True;
 
   Progress := CreateOutputProgressPage('Setting up Blighter',
-    'This takes about 5-15 minutes.  Please keep the laptop plugged in and on the home Wi-Fi.');
+    'This takes about 5-15 minutes.  Please keep the PC plugged in and on the home Wi-Fi.');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -419,7 +427,18 @@ begin
     BLIGHTER_ADMIN_PASSWORD variable); the page checks would show message
     boxes nobody can see. }
   if WizardSilent then Exit;
-  if CurPageID = AccountPage.ID then begin
+  if CurPageID = wpWelcome then begin
+    if MsgBox('Have you already installed the Blighter Restrictor app on your OWN PC?' + #13#10#13#10 +
+      'This installer is for the child''s PC.  You need the parent app to finish connecting to it and to manage it.' + #13#10#13#10 +
+      'Yes - the parent app is installed, continue' + #13#10 +
+      'No - stop now and install the parent app first', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then begin
+      MsgBox('Setup will now close.  Nothing has been changed.' + #13#10#13#10 +
+        'Install Blighter Restrictor on your own PC first, then run this installer again.', mbInformation, MB_OK);
+      WizardForm.Close;
+      Result := False;
+    end;
+  end
+  else if CurPageID = AccountPage.ID then begin
     if AccountCombo.ItemIndex < 0 then begin
       MsgBox('Please choose the child''s account.', mbError, MB_OK); Result := False;
     end
@@ -430,7 +449,7 @@ begin
   else if CurPageID = PasswordPage.ID then begin
     if not (KeepPw.Visible and KeepPw.Checked) then begin
       if Length(Pw1.Text) < 10 then begin
-        MsgBox('Please use at least 10 characters - this account has full control of the laptop.', mbError, MB_OK); Result := False;
+        MsgBox('Please use at least 10 characters - this account has full control of the PC.', mbError, MB_OK); Result := False;
       end
       else if Pw1.Text <> Pw2.Text then begin
         MsgBox('The two passwords do not match.', mbError, MB_OK); Result := False;
@@ -477,7 +496,7 @@ begin
   end;
   if SquidOwner = 'other' then
     Result := Result + 'Squid:' + NewLine + Space + 'replace the existing Squid (its settings saved first)' + NewLine + NewLine;
-  Result := Result + 'Setup first creates a Windows restore point ("Before Blighter Restrictor") and records the laptop''s current settings, so Blighter can be removed cleanly later.';
+  Result := Result + 'Setup first creates a Windows restore point ("Before Blighter Restrictor") and records the PC''s current settings, so Blighter can be removed cleanly later.';
 end;
 
 { ------------------------------------------------------------- run setup --- }
@@ -517,7 +536,7 @@ begin
     { Blighter was already working before this run: keeping it is the safe
       default (undoing would remove the filtering completely). }
     R := SuppressibleMsgBox('Setup did not finish:' + #13#10#13#10 + LastError + #13#10#13#10 +
-      'Blighter was already installed on this laptop.  Keep it and run this installer again later?  (Recommended.)' + #13#10#13#10 +
+      'Blighter was already installed on this PC.  Keep it and run this installer again later?  (Recommended.)' + #13#10#13#10 +
       'Yes - keep Blighter as it is' + #13#10 + 'No - remove Blighter completely',
       mbError, MB_YESNO, IDYES);
     if R = IDNO then begin
@@ -528,7 +547,7 @@ begin
   end
   else if FailedUndo then begin
     R := SuppressibleMsgBox('Setup did not finish:' + #13#10#13#10 + LastError + #13#10#13#10 +
-      'Undo the changes made so far?  (Recommended.  This removes Blighter completely and puts the laptop back as it was.)',
+      'Undo the changes made so far?  (Recommended.  This removes Blighter completely and puts the PC back as it was.)',
       mbError, MB_YESNO, IDYES);
     if R = IDYES then begin
       RunScript('-Remove -Yes', 'Undoing the changes...');
@@ -536,7 +555,7 @@ begin
     end else
       Result := LastError + #13#10#13#10 + 'The changes were left in place - run this installer again to finish.  The full log is in ' + LogFile;
   end else
-    Result := LastError + #13#10#13#10 + 'Nothing on the laptop was changed.  The full log is in ' + LogFile;
+    Result := LastError + #13#10#13#10 + 'Nothing on the PC was changed.  The full log is in ' + LogFile;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -544,11 +563,14 @@ var
   S: String;
 begin
   if CurPageID = wpFinished then begin
-    S := 'Now, on your own PC, open the Blighter Restrictor app and add this laptop with:' + #13#10#13#10 +
-      '    Laptop IP address:  ' + ResultIp + #13#10 +
+    S := 'Now, on your own PC, open the Blighter Restrictor app, choose Add and enter:' + #13#10#13#10 +
+      '    Address:  ' + ResultIp + #13#10 +
       '    Child''s username:  ' + ResultChild + #13#10 +
       '    Admin login:  blighter  (and the password you chose)' + #13#10#13#10 +
-      'Tip: reserve this IP address for the laptop in your router so it does not change.' + #13#10 +
+      'Keep this PC switched on and on your home network until the parent app has connected.  ' +
+      'If the address changes later, the parent app finds this PC again by itself.' + #13#10#13#10 +
+      'To see these details again: press Windows key + R and type' + #13#10 +
+      '    C:\ProgramData\BlighterChild\Blighter-Details.cmd' + #13#10#13#10 +
       'The child should sign out and back in once.';
     if Notes <> '' then S := S + #13#10#13#10 + 'Please note:' + #13#10 + Notes;
     if SquidUpdated then
