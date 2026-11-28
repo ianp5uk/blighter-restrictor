@@ -23,6 +23,9 @@
 # both child helpers (to write the Squid rules).
 # Opera downloads are blocked by a per-child switch too ("Block Opera
 # downloads", on by default): OPERA_DOMAINS and opera_rules() below.
+# The Controls tab's three-way switch (Filtered / Block all / Open all, since
+# 1.3.0) sits on top of all of these: CONTROLS, control_rules() and
+# voice_open() below, used by both child helpers.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -40,6 +43,40 @@ from urllib.parse import urlsplit
 MODE_BLOCKLIST = "allow-all-block-some"
 MODE_ALLOWLIST = "block-all-allow-some"
 MODES = (MODE_BLOCKLIST, MODE_ALLOWLIST)
+
+# ---- Controls tab: what is in force, on top of the filters (since 1.3.0) ------
+# The filters (mode, lists, Discord, Opera, home network) are kept whatever
+# this is; it only decides whether they are used.
+#   filtered  the filters apply (normal)
+#   block     every website and Discord blocked; the home network stays as
+#             its own switch says (the parent app's SSH is never affected)
+#   open      every website and Discord allowed; still recorded
+CONTROL_FILTERED = "filtered"
+CONTROL_BLOCK = "block"
+CONTROL_OPEN = "open"
+CONTROLS = (CONTROL_FILTERED, CONTROL_BLOCK, CONTROL_OPEN)
+CONTROL_NAMES = {CONTROL_FILTERED: "Filtered", CONTROL_BLOCK: "Block all", CONTROL_OPEN: "Open all"}
+
+
+def control_rules(control, home_allowed, home_subnets):
+    """Squid lines for Block all / Open all, placed before everything else.
+    Returns "" for Filtered (the filters' own rules then follow)."""
+    if control == CONTROL_OPEN:
+        return "# OPEN ALL (Controls tab): every site allowed, still logged\nhttp_access allow localhost\n"
+    if control == CONTROL_BLOCK:
+        return ("# BLOCK ALL (Controls tab): every site blocked except the home network\n"
+                + home_net_rules(home_allowed, home_subnets) + "http_access deny all\n")
+    return ""
+
+
+def voice_open(control, discord_allowed):
+    """Should the firewall's Discord voice/video opening be on?"""
+    if control == CONTROL_OPEN:
+        return True
+    if control == CONTROL_BLOCK:
+        return False
+    return bool(discord_allowed)
+
 
 _LABEL = r"(?!-)[a-z0-9_-]{1,63}(?<!-)"
 _DOMAIN_RE = re.compile(rf"^\.?(?:{_LABEL}\.)*{_LABEL}$")

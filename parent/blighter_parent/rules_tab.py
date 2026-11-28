@@ -32,6 +32,9 @@
 # applied until it is back ("Reload from PC" tries again).
 # Layout: the Discord, Opera and home network switches on one row, the mode
 # below; both rows wrap at large text sizes or in a narrow window.
+# Under Block all or Open all (Controls tab, since 1.3.0) a notice says the
+# filters are kept but not in force; they can still be edited and applied,
+# and take effect when the Controls tab is set back to Filtered.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -110,6 +113,10 @@ class RulesTab(QWidget):
         self.cb_opera.setToolTip(OPERA_TIP)
         self.cb_opera.toggled.connect(lambda *_: self._changed())
         self.dirty_label = QLabel("")
+        self.control_label = QLabel("")
+        self.control_label.setWordWrap(True)
+        self.control_label.setStyleSheet("color:#c0392b; font-weight:bold;")
+        self.control_label.hide()
 
         self.cb_home = QCheckBox("Home network access:")
         self.cb_home.setToolTip(HOME_TIP)
@@ -191,6 +198,7 @@ class RulesTab(QWidget):
         lay.addWidget(switches)
         lay.addWidget(modes)
         lay.addWidget(self.stale_label)
+        lay.addWidget(self.control_label)
         lay.addWidget(help_label)
         lay.addWidget(split, 1)
         lay.addLayout(btns)
@@ -240,6 +248,20 @@ class RulesTab(QWidget):
                 "until it is back - press 'Reload from PC' to try again.")
         self.stale_label.setText(f"Last known filters, from {when}.  {tail}")
         self.stale_label.show()
+
+    def show_control(self, info):
+        """info: {"state", ...} from the PC, or None if not known yet."""
+        state = (info or {}).get("state")
+        if (info or {}).get("bypassed"):
+            text = ("Blighter is switched off on this PC itself, so these filters are not in force.  "
+                    "Choose a setting on the Controls tab to switch it back on.")
+        elif state in (domains.CONTROL_BLOCK, domains.CONTROL_OPEN):
+            text = (f"{domains.CONTROL_NAMES[state]} is on (Controls tab), so these filters are kept but "
+                    "not in force.  Changes you apply here take effect when it is set back to Filtered.")
+        else:
+            text = ""
+        self.control_label.setText(text)
+        self.control_label.setVisible(bool(text))
 
     def _remember(self, child, filters):
         if self.store is not None and child is not None:
@@ -389,6 +411,8 @@ class RulesTab(QWidget):
             self._conn_error = ""
             self._set_stale(None)
             self._show_filters(data)
+            if data.get("control"):
+                self.show_control(dict(data["control"], bypassed=bool(data.get("bypassed"))))
             self._remember(child, data)
             self._set_enabled(True)
             self.status.emit(f"Filters loaded from {child.name}'s PC.")

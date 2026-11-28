@@ -92,7 +92,7 @@ $ErrorActionPreference = "Stop"
 # Progress bars are hidden (they flash on and off and look like a fault);
 # slow steps print their own "still working" lines instead.
 $ProgressPreference    = "SilentlyContinue"
-$Version   = "1.2.9"
+$Version   = "1.3.0"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -487,12 +487,16 @@ Lock-Folder $Dest
 if ((Resolve-Path $Src).Path.TrimEnd('\') -ne (Resolve-Path $Dest).Path.TrimEnd('\')) {
     foreach ($item in "blighter-apply.py", "blighter-apply.cmd", "blighter-system.ps1", "blighter-setup.ps1",
                       "domains.py", "blockpage.py", "logtail.py", "squid.conf", "python", "LICENSE.txt",
-                      "Remove Blighter Child.cmd", "Pause Blighter Child.cmd", "Resume Blighter Child.cmd",
+                      "Remove Blighter Child.cmd", "Blighter Open All.cmd", "Blighter Filtered.cmd",
                       "blighter-details.ps1", "Blighter-Details.cmd") {
         $from = Join-Path $Src $item
         if (-not (Test-Path $from)) { Die "Missing file $item next to this script - unzip the whole package first." }
         Copy-Item $from $Dest -Recurse -Force
     }
+}
+# 1.2.x's local switches (Pause switched Blighter off and stopped recording).
+foreach ($old in "Pause Blighter Child.cmd", "Resume Blighter Child.cmd") {
+    Remove-Item (Join-Path $Dest $old) -Force -ErrorAction SilentlyContinue
 }
 Get-ChildItem $Dest -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
 Lock-Folder $Dest
@@ -906,10 +910,10 @@ Write-Host ""
 Write-Host "IMPORTANT: on Windows the filter applies to EVERY account on this PC,"
 Write-Host "including yours.  The child should sign out and back in once."
 Write-Host ""
-Write-Host "If something stops working, run 'Pause Blighter Child.cmd' in $Dest"
-Write-Host "to switch Blighter off without uninstalling (activity is not recorded while it is"
-Write-Host "off); 'Resume ...' or the parent app's Resume filtering switches it on again."
-Write-Host "'Remove Blighter Child.cmd' there undoes everything."
+Write-Host "In $Dest, 'Blighter Open All.cmd' allows every site from this PC"
+Write-Host "(activity is still recorded) and 'Blighter Filtered.cmd' puts the filters back;"
+Write-Host "the parent app's Controls tab does the same.  'Remove Blighter Child.cmd' there"
+Write-Host "undoes everything."
 if ($script:SquidChanged) {
     Write-Host ""
     Write-Host "Setup finished. Note: Squid, the web filter Blighter uses, has been updated by its"

@@ -3,15 +3,22 @@
 #
 # Purpose: the application shell.  Left: the list of children with an
 # online/offline indicator (checked every 20 s) and Add / Edit / Remove /
-# Test / Reconnect / Log out buttons.  Right: three tabs for the selected
+# Test / Reconnect / Log out buttons.  Right: four tabs for the selected
 # child -
 #   Filters  - mode, allow/block lists, Allow Discord, home network, Apply
 #              (last known filters shown, read-only, while a PC is offline)
+#   Controls - Filtered / Block all / Open all; log the child out, restart
+#              or shut down the PC (since 1.3.0; replaces Pause / Resume)
 #   Activity - the Squid access log, filters, per-site summary
 #   PC       - what is actually in force on the child's PC, health, Reload
-#              Squid, Pause / Resume filtering
+#              Squid
 # A status bar shows progress and errors, and "Working…" with a moving bar
-# while the app waits for a PC.  A paused child is shown "- PAUSED" in red.
+# while the app waits for a PC.  A child under Block all or Open all is
+# shown "- BLOCK ALL" / "- OPEN ALL" in red ("- SWITCHED OFF" if Blighter
+# was switched off on the PC itself); the background activity collection
+# keeps this up to date.
+# "Log out" here closes the app's SSH session to the PC; logging the CHILD
+# out of their PC is on the Controls tab.
 # Children with an open SSH session are shown in bold.
 # Addresses: a child's PC is recognised by its SSH identity, so when DHCP
 # gives it a new address the app finds it again on the home network and
@@ -58,10 +65,12 @@ from . import discovery
 from .activity_tab import ActivityTab
 from .collector import Collector
 from .config_store import Store
+from .controls_tab import ControlsTab
 from .dialogs import ChildDialog, ReconnectDialog, ask_password
 from .pc_tab import PCTab
 from .remote import RemoteManager, is_reachable, search_allowed
 from .rules_tab import RulesTab
+from .shared import domains
 from .workers import busy_signal, run_bg
 
 ICON_PATH = os.path.join(os.path.dirname(__file__), "icon.svg")
@@ -105,7 +114,7 @@ class MainWindow(QMainWindow):
         self.child_moved.connect(self._child_moved)
         self.collector = Collector(self.remotes, self.store, self)
         self.online = {}
-        self.paused = {}      # child id -> True/False, as last reported by the PC
+        self.control = {}     # child id -> {"state", "by", "since", "bypassed"}, as last reported by the PC
         self.icons = {True: _dot("#27ae60"), False: _dot("#95a5a6"), None: _dot("#f1c40f")}
         self.current = None
 
@@ -144,16 +153,20 @@ class MainWindow(QMainWindow):
         # ---- tabs
         self.rules = RulesTab(self.remotes, self.store)
         self.activity = ActivityTab(self.collector)
+        self.controls = ControlsTab(self.remotes)
         self.pc_tab = PCTab(self.remotes)
         self.tabs = QTabWidget()
         self.tabs.addTab(self.rules, "Filters")
+        self.tabs.addTab(self.controls, "Controls")
         self.tabs.addTab(self.activity, "Activity")
         self.tabs.addTab(self.pc_tab, "PC")
         self.tabs.currentChanged.connect(self._tab_changed)
-        for t in (self.rules, self.activity, self.pc_tab):
+        for t in (self.rules, self.controls, self.activity, self.pc_tab):
             t.status.connect(self.say)
         self.activity.add_domain.connect(self._add_domain)
-        self.pc_tab.paused_known.connect(self._paused_known)
+        self.controls.control_known.connect(self._control_known)
+        self.pc_tab.control_known.connect(self._control_known)
+        self.collector.updated.connect(self._collected)
 
         split = QSplitter()
         split.addWidget(left)
@@ -234,6 +247,8 @@ class MainWindow(QMainWindow):
         for c in self.store.children:
             it = QListWidgetItem(self.icons[self.online.get(c.id)], self._label(c))
             it.setData(Qt.UserRole, c.id)
+            if self._control_suffix(c.id):
+                it.setForeground(QColor("#c0392b"))
             self.list.addItem(it)
         self.list.blockSignals(False)
         target = select_id or (self.current.id if self.current else None)
@@ -247,21 +262,43 @@ class MainWindow(QMainWindow):
             self._set_child(None)
 
     def _label(self, c):
-        return c.label() + ("   - PAUSED" if self.paused.get(c.id) else "")
+        return c.label() + self._control_suffix(c.id)
+
+    def _control_suffix(self, cid):
+        info = self.control.get(cid) or {}
+        if info.get("bypassed"):
+            return "   - SWITCHED OFF"
+        state = info.get("state")
+        if state == domains.CONTROL_OPEN:
+            return "   - OPEN ALL"
+        if state == domains.CONTROL_BLOCK:
+            return "   - BLOCK ALL"
+        return ""
 
     def _busy(self, n):
         for w in (self.busy_label, self.busy_bar):
             w.setVisible(n > 0)
 
-    def _paused_known(self, child_id, paused):
-        if self.paused.get(child_id) != paused:
-            self.paused[child_id] = paused
-            for i in range(self.list.count()):
-                it = self.list.item(i)
-                c = self._child_by_id(it.data(Qt.UserRole))
-                if c and c.id == child_id:
-                    it.setText(self._label(c))
-                    it.setForeground(QColor("#c0392b") if paused else self.list.palette().text().color())
+    def _collected(self, child_id):
+        """Background collection: the PC's replies say what the Controls switch is."""
+        a = self.collector.activity(child_id)
+        if a.control:
+            self._control_known(child_id, dict(a.control, bypassed=a.bypassed))
+
+    def _control_known(self, child_id, info):
+        info = {k: info.get(k) for k in ("state", "by", "since", "bypassed")}
+        if self.control.get(child_id) == info:
+            return
+        self.control[child_id] = info
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            c = self._child_by_id(it.data(Qt.UserRole))
+            if c and c.id == child_id:
+                it.setText(self._label(c))
+                it.setForeground(QColor("#c0392b") if self._control_suffix(c.id)
+                                 else self.list.palette().text().color())
+        if self.current and self.current.id == child_id:
+            self.rules.show_control(info)
 
     def _refresh_labels(self):
         """Logged-in children are shown in bold (tooltip says so)."""
@@ -380,6 +417,9 @@ class MainWindow(QMainWindow):
         if child and self.store.get_password(child):
             self.collector.start(child)        # selecting a child logs in to their PC
         self.rules.set_child(child)
+        if child:
+            self.rules.show_control(self.control.get(child.id))
+        self.controls.set_child(child)
         self.activity.set_child(child)
         self.pc_tab.set_child(child)
         self._tab_changed(self.tabs.currentIndex())
@@ -390,6 +430,8 @@ class MainWindow(QMainWindow):
         w = self.tabs.widget(index)
         if w is self.pc_tab:
             self.pc_tab.refresh()
+        elif w is self.controls:
+            self.controls.refresh()
 
     def _add_domain(self, which, domain):
         self.say(self.rules.add_domain(which, domain))

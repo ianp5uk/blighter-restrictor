@@ -23,11 +23,19 @@
 #                       activity with these without fetching lines twice
 #   init                (used by blighter-setup) create default files if absent
 #   netinfo             the networks the PC is on now (for the home network setting)
-#   pause / resume      all websites allowed / filtering back on.  While
-#                       paused Squid allows everything but the child firewall
-#                       STAYS ON, so web traffic still goes through Squid and
-#                       activity is still recorded (since 1.2.6; before that
-#                       the firewall stood down and monitoring stopped)
+#   filtered|block|open [local]
+#                       the Controls tab's three-way switch (since 1.3.0):
+#                       the filters apply / every site and Discord blocked
+#                       (home network as its switch says) / every site and
+#                       Discord allowed.  The filters themselves are kept.
+#                       The firewall stays on in all three, so web traffic
+#                       always goes through Squid and is always recorded.
+#                       "local" records that it was set on the PC itself
+#                       (sudo blighter-apply open local) rather than by the
+#                       parent app.  Replaces 1.2.x's pause / resume.
+#   logout              log the child's account out (unsaved work is lost)
+#   shutdown / restart  switch the PC off / restart it, 5 seconds after
+#                       replying (so the parent app gets the answer)
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -52,7 +60,7 @@ import domains  # noqa: E402  (shared validation, same file as the parent app)
 import blockpage  # noqa: E402  (neutral error pages, same file as the Windows helper)
 import logtail  # noqa: E402  (incremental log reading, same file as the Windows helper)
 
-VERSION = "1.2.9"
+VERSION = "1.3.0"
 BASE = "/etc/squid/blighter"
 MODE_FILE = os.path.join(BASE, "mode")
 ALLOW_FILE = os.path.join(BASE, "allow.list")
@@ -63,7 +71,8 @@ ERR_DIR = os.path.join(BASE, "errors")
 STOCK_ERR_DIRS = ("/usr/share/squid/errors/templates", "/usr/share/squid/errors/en")
 SQUID_CONF = "/etc/squid/squid.conf"
 CHILD_CONF = "/etc/blighter/child.conf"
-PAUSED_FLAG = "/etc/blighter/paused"
+CONTROL_FILE = "/etc/blighter/control"   # "open parent 2026-11-28 14:32:00"; missing = filtered
+LEGACY_PAUSED = "/etc/blighter/paused"   # 1.2.x Pause (now Open all), migrated by init / reload
 LOG_DIR = "/var/log/squid"
 MANAGED = (MODE_FILE, ALLOW_FILE, BLOCK_FILE, RULES_FILE)
 MAX_LOG_LINES = 100000
@@ -180,30 +189,50 @@ def parse_options(data):
     return discord, home, [f"Home network: {e}" for e in errors], warnings
 
 
-def fix_conf_permissions():
+def fix_conf_permissions(path=CHILD_CONF):
     # Keep the permissions blighter-setup gave it (write() uses Squid's 0640 root:proxy).
-    os.chmod(CHILD_CONF, 0o644)
+    # The firewall script reads these as root, so world-readable is fine.
+    os.chmod(path, 0o644)
     try:
-        shutil.chown(CHILD_CONF, "root", "root")
+        shutil.chown(path, "root", "root")
     except (LookupError, PermissionError):
         pass
 
 
-def is_paused():
-    return os.path.exists(PAUSED_FLAG)
+def read_control():
+    """{"state", "by", "since"}: the Controls tab's switch as stored on the PC.
+    by is "parent" (the parent app) or "pc" (set on the PC itself)."""
+    parts = read(CONTROL_FILE).split(None, 2)
+    state = parts[0] if parts and parts[0] in domains.CONTROLS else domains.CONTROL_FILTERED
+    if not parts and os.path.exists(LEGACY_PAUSED):      # not migrated yet
+        state = domains.CONTROL_OPEN
+    by = parts[1] if len(parts) > 1 and parts[1] in ("parent", "pc") else "parent"
+    since = parts[2].strip() if len(parts) > 2 else ""
+    return {"state": state, "by": by, "since": since}
 
 
-def paused_rules():
-    # While paused Squid lets everything through.  The desktop proxy stays
-    # locked to Squid and the child firewall stays on, so every request is
-    # still logged for the parent app.
-    if is_paused():
-        return "# PAUSED (Pause in the parent app): everything allowed, still logged\nhttp_access allow localhost\n"
-    return ""
+def control_state():
+    return read_control()["state"]
+
+
+def write_control(state, by):
+    os.makedirs(os.path.dirname(CONTROL_FILE), exist_ok=True)
+    write(CONTROL_FILE, f"{state} {by} {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    fix_conf_permissions(CONTROL_FILE)
+
+
+def migrate_legacy():
+    """1.2.x's Pause flag becomes Open all.  True if anything changed."""
+    if not os.path.exists(LEGACY_PAUSED):
+        return False
+    if not os.path.exists(CONTROL_FILE):
+        write_control(domains.CONTROL_OPEN, "parent")
+    os.remove(LEGACY_PAUSED)
+    return True
 
 
 def apply_firewall_options():
-    """Re-create the nftables rules (Discord voice, home network, paused) from child.conf."""
+    """Re-create the nftables rules (Discord voice, home network) from child.conf and the Controls switch."""
     if have_systemd():
         return run(["systemctl", "reload-or-restart", "blighter-firewall.service"])
     return run(["/usr/sbin/blighter-firewall", "start"])
@@ -225,7 +254,10 @@ def render_rules(mode, allow_lines, block_lines, discord=None, home=None, opera=
         home = home_net()
     if opera is None:
         opera = opera_blocked()
-    head += paused_rules()
+    control = control_state()
+    if control != domains.CONTROL_FILTERED:
+        # Block all / Open all: the filters are kept on disk but not used.
+        return head + domains.control_rules(control, home["allowed"], home["subnets"])
     head += domains.home_net_rules(home["allowed"], home["subnets"])
     head += domains.opera_rules(opera)
     head += domains.discord_rules(discord)
@@ -294,7 +326,7 @@ def cmd_get():
         "discord": discord_allowed(),
         "home_net": home_net(),
         "opera": opera_blocked(),
-        "paused": is_paused(),
+        "control": read_control(),
     })
 
 
@@ -323,11 +355,9 @@ def cmd_status():
         "squid_conf_managed": "Blighter Restrictor" in read(SQUID_CONF)[:400],
         "firewall_active": code == 0,
         "bypassed": False,
-        "firewall_rules": ("Filtering is PAUSED - all websites are allowed; activity is still recorded.\n\n"
-                           if is_paused() else "")
-                          + (fw if code == 0 else "Firewall table not loaded"),
+        "firewall_rules": control_banner() + (fw if code == 0 else "Firewall table not loaded"),
         "proxy_locked": os.path.exists("/etc/dconf/db/local.d/locks/00-blighter-proxy"),
-        "paused": is_paused(),
+        "control": read_control(),
         "home_net": home_net(),
     })
 
@@ -405,7 +435,7 @@ def cmd_set():
     warn = [l for l in msg.splitlines() if "WARNING" in l] + opt_warnings
     out({"ok": True, "message": message, "discord": discord_allowed(), "home_net": home_net(),
          "opera": opera_blocked(),
-         "paused": is_paused(),
+         "control": read_control(),
          "notes": n1 + n2, "warnings": warn[-10:],
          "allow": allow, "block": block, "mode": mode})
 
@@ -460,27 +490,75 @@ def cmd_netinfo():
     out({"networks": current_networks()})
 
 
-def cmd_pause(on):
-    """Pause (on=True) or resume filtering.  While paused Squid allows
-    everything; the firewall stays on so activity is still recorded."""
-    if on:
-        write(PAUSED_FLAG, time.strftime("%Y-%m-%d %H:%M:%S") + "\n")
-    elif os.path.exists(PAUSED_FLAG):
-        os.remove(PAUSED_FLAG)
+def control_banner():
+    c = control_state()
+    if c == domains.CONTROL_OPEN:
+        return "OPEN ALL - every website and Discord are allowed; activity is still recorded.\n\n"
+    if c == domains.CONTROL_BLOCK:
+        return "BLOCK ALL - every website and Discord are blocked (home network as its switch says).\n\n"
+    return ""
+
+
+CONTROL_MESSAGES = {
+    domains.CONTROL_FILTERED: "Filtered - the filters apply.",
+    domains.CONTROL_BLOCK: "Block all - every website and Discord are blocked.",
+    domains.CONTROL_OPEN: "Open all - every website and Discord are allowed; activity is still recorded.",
+}
+
+
+def cmd_control(state, local):
+    """The Controls tab's switch.  The firewall stays on in every state, so
+    activity is always recorded; only Squid's rules and the Discord voice
+    opening change."""
+    migrate_legacy()
+    write_control(state, "pc" if local else "parent")
     write(RULES_FILE, render_rules(read_mode(), read(ALLOW_FILE).splitlines(), read(BLOCK_FILE).splitlines()))
     code, msg = squid_parse()
     ok, rmsg = (squid_reload() if code == 0 else (False, msg))
     fw_code, fw_msg = apply_firewall_options()
     problems = ([] if ok else ["Squid: " + parse_errors(rmsg)]) + ([] if fw_code == 0 else ["Firewall: " + fw_msg[-300:]])
-    out({"ok": not problems, "paused": is_paused(),
-         "message": ("Filtering PAUSED - all websites are allowed; activity is still recorded."
-                     if on else "Filtering RESUMED."),
+    out({"ok": not problems, "control": read_control(), "message": CONTROL_MESSAGES[state],
          "errors": problems}, 0 if not problems else 1)
+
+
+def child_user():
+    return conf_value("CHILD_USER")
+
+
+def cmd_logout():
+    """Log the child's account out (every session it has on this PC)."""
+    user = child_user()
+    if not user:
+        out({"ok": False, "message": "No child account is recorded on this PC."}, 1)
+    code, text = run(["loginctl", "list-users", "--no-legend"])
+    users = [l.split()[1] for l in text.splitlines() if len(l.split()) > 1] if code == 0 else []
+    if user not in users:
+        out({"ok": True, "logged_out": False, "message": f"{user} is not logged in."})
+    code, text = run(["loginctl", "terminate-user", user])
+    if code != 0:
+        out({"ok": False, "message": f"Could not log {user} out: {text[-300:]}"}, 1)
+    out({"ok": True, "logged_out": True, "message": f"{user} has been logged out."})
+
+
+def cmd_power(action):
+    """Shut down or restart in 5 seconds, so this reply reaches the parent app first."""
+    verb = "poweroff" if action == "shutdown" else "reboot"
+    if have_systemd():
+        code, text = run(["systemd-run", "--quiet", "--on-active=5", "--timer-property=AccuracySec=1s",
+                          "systemctl", verb])
+    else:
+        code, text = run(["shutdown", "-h" if action == "shutdown" else "-r", "+0"])
+    if code != 0:
+        out({"ok": False, "message": f"Could not {'shut down' if action == 'shutdown' else 'restart'} "
+                                     f"the PC: {text[-300:]}"}, 1)
+    out({"ok": True, "message": ("The PC is shutting down." if action == "shutdown" else "The PC is restarting.")})
 
 
 def cmd_reload():
     # Rewrite rules.conf too, so a PC set up by an older version gets the
     # current Squid settings (e.g. the neutral error pages).
+    if migrate_legacy():
+        apply_firewall_options()
     write(RULES_FILE, render_rules(read_mode(), read(ALLOW_FILE).splitlines(), read(BLOCK_FILE).splitlines()))
     code, msg = squid_parse()
     if code != 0:
@@ -537,6 +615,7 @@ def cmd_logstart(args):
     rotated = len(args) > 1 and args[1] == "rotated"
     res = logtail.start(os.path.join(LOG_DIR, "access.log"), _rotated_logs(False), n, rotated)
     res["bypassed"] = False
+    res["control"] = read_control()
     out(res)
 
 
@@ -546,6 +625,7 @@ def cmd_lognext(args):
     ino = "" if args[0] == "-" else args[0]
     res = logtail.next_lines(os.path.join(LOG_DIR, "access.log"), _rotated_logs(True), ino, args[1])
     res["bypassed"] = False
+    res["control"] = read_control()
     out(res)
 
 
@@ -562,10 +642,15 @@ def cmd_init():
         write(BLOCK_FILE, DEFAULT_BLOCK)
     if not os.path.exists(MODE_FILE):
         write(MODE_FILE, domains.MODE_BLOCKLIST + "\n")
+    migrate_legacy()
     allow = read(ALLOW_FILE).splitlines()
     block = read(BLOCK_FILE).splitlines()
     write(RULES_FILE, render_rules(read_mode(), allow, block))
     print("Blighter rule files ready in " + BASE)
+
+
+USAGE = ("usage: blighter-apply get|status|set|reload|log N [rotated]|logstart N [rotated]|"
+         "lognext INO OFFSET|init|netinfo|filtered|block|open [local]|logout|shutdown|restart")
 
 
 def main():
@@ -573,7 +658,7 @@ def main():
         sys.exit("blighter-apply must be run as root (via sudo)")
     args = sys.argv[1:]
     if not args:
-        sys.exit(__doc__ or "usage: blighter-apply get|status|set|reload|log N [rotated]|logstart N [rotated]|lognext INO OFFSET|init|netinfo|pause|resume")
+        sys.exit(USAGE)
     cmd, rest = args[0], args[1:]
     if cmd == "get" and not rest:
         cmd_get()
@@ -593,10 +678,14 @@ def main():
         cmd_init()
     elif cmd == "netinfo" and not rest:
         cmd_netinfo()
-    elif cmd in ("pause", "resume") and not rest:
-        cmd_pause(cmd == "pause")
+    elif cmd in domains.CONTROLS and rest in ([], ["local"]):
+        cmd_control(cmd, bool(rest))
+    elif cmd == "logout" and not rest:
+        cmd_logout()
+    elif cmd in ("shutdown", "restart") and not rest:
+        cmd_power(cmd)
     else:
-        sys.exit("usage: blighter-apply get|status|set|reload|log N [rotated]|logstart N [rotated]|lognext INO OFFSET|init|netinfo|pause|resume")
+        sys.exit(USAGE)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@
 ; nothing catches the child's eye.  The parent's tools are in
 ; C:\ProgramData\BlighterChild: Blighter-Details.cmd (the address for the
 ; parent app, connection repair, password change; Windows key + R opens it)
-; and the Pause / Resume / Remove .cmd files.
+; and the Open All / Filtered / Remove .cmd files.
 ; The child package (helper, scripts, embedded Python) is carried inside as
 ; blighter-child-package.zip and unpacked to a temporary folder; the setup
 ; script copies it to C:\ProgramData\BlighterChild.  Squid is downloaded by

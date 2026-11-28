@@ -7,14 +7,9 @@
 # filtered, whether the child is an administrator) and the raw files -
 # generated Squid rules, allow/block lists, squid.conf and the firewall
 # rules.  "Reload Squid" re-reads the configuration on demand.
-# "Pause filtering" allows every website; "Resume filtering" switches the
-# rules back on.  While paused the web traffic still goes through Squid, so
-# activity is still recorded (since 1.2.6 on both Ubuntu and Windows).  A red
-# banner here (and "- PAUSED" in the children list) says so.  If Blighter was
-# switched off on the PC itself ("Pause Blighter Child" on Windows, for
-# troubleshooting), the banner says that nothing is recorded; Resume
-# filtering switches it back on.  A PC with an older Blighter child (before
-# 1.2.6) stops recording while paused: the app warns before pausing it.
+# "Mode in force" also shows the Controls tab's switch when it is not
+# Filtered (Block all / Open all, since 1.3.0, which replaced the Pause /
+# Resume buttons that were here).
 # Buttons are greyed out while a request to the PC is running.
 # Ubuntu and Windows PCs report the same fields; on Windows the
 # firewall covers the whole PC rather than only the child's account.
@@ -33,7 +28,7 @@
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QMessageBox, QPlainTextEdit, QPushButton, QTabWidget,
+                               QPlainTextEdit, QPushButton, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from .shared import ADMIN_WARNING, domains, same_user
@@ -48,23 +43,15 @@ def _flag(ok, yes="Yes", no="No"):
     return f"<span style='color:{colour}'><b>{yes if ok else no}</b></span>"
 
 
-def _older(version, than):
-    try:
-        return tuple(int(x) for x in version.split(".")[:3]) < than
-    except (AttributeError, ValueError):
-        return False
-
-
 class PCTab(QWidget):
     status = Signal(str)
-    paused_known = Signal(str, bool)     # child id, paused?
+    control_known = Signal(str, dict)    # child id, {"state", "by", "since", "bypassed"}
 
     def __init__(self, remotes, parent=None):
         super().__init__(parent)
         self.remotes = remotes
         self.child = None
         self.busy = False
-        self.paused = None
         self.helper_version = None
 
         self.fields = {}
@@ -98,30 +85,15 @@ class PCTab(QWidget):
         self.btn_refresh = QPushButton("Refresh")
         self.btn_reload = QPushButton("Reload Squid")
         self.btn_reload.setToolTip("Check squid.conf and make Squid re-read it")
-        self.btn_pause = QPushButton("Pause filtering")
-        self.btn_pause.setToolTip("Allow every website on this PC until you press Resume.  "
-                                  "Activity is still recorded.")
-        self.btn_resume = QPushButton("Resume filtering")
-        self.btn_resume.setToolTip("Switch filtering back on")
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_reload.clicked.connect(self.reload_squid)
-        self.btn_pause.clicked.connect(lambda: self.set_paused(True))
-        self.btn_resume.clicked.connect(lambda: self.set_paused(False))
         btns = QHBoxLayout()
         btns.addWidget(self.btn_refresh)
         btns.addWidget(self.btn_reload)
         btns.addStretch()
-        btns.addWidget(self.btn_pause)
-        btns.addWidget(self.btn_resume)
-
-        self.banner = QLabel("")
-        self.banner.setWordWrap(True)
-        self.banner.setStyleSheet("background:#c0392b; color:white; padding:8px; font-weight:bold;")
-        self.banner.hide()
 
         lay = QVBoxLayout(self)
         lay.addLayout(btns)
-        lay.addWidget(self.banner)
         lay.addWidget(health)
         lay.addWidget(self.files, 1)
         self._enable(False)
@@ -130,36 +102,14 @@ class PCTab(QWidget):
         on = on and self.child is not None and not self.busy
         self.btn_refresh.setEnabled(on)
         self.btn_reload.setEnabled(on)
-        # Until the PC has said whether it is paused, both are offered.
-        self.btn_pause.setEnabled(on and self.paused is not True)
-        self.btn_resume.setEnabled(on and self.paused is not False)
 
     def _set_busy(self, on):
         self.busy = on
         self._enable(True)
 
-    def _show_paused(self, child, paused, bypassed=False):
-        self.paused = paused
-        self.banner.setVisible(bool(paused))
-        if paused and not bypassed and _older(self.helper_version, (1, 2, 6)):
-            self.banner.setText(f"FILTERING IS PAUSED on {child.name}'s PC - {child.name} has OPEN internet "
-                                f"access.  This PC has an older Blighter child ({self.helper_version}), so "
-                                "activity may not be recorded while paused.  Update it to 1.2.6.")
-        elif bypassed:
-            self.banner.setText(f"BLIGHTER IS SWITCHED OFF on {child.name}'s PC itself ('Pause Blighter Child' "
-                                f"was run on it) - {child.name} has OPEN internet access and NO activity is "
-                                "recorded.  Press Resume filtering to switch it back on.")
-        elif paused:
-            self.banner.setText(f"FILTERING IS PAUSED on {child.name}'s PC - every website is allowed until you "
-                                "press Resume filtering.  Activity is still recorded.")
-        self.paused_known.emit(child.id, bool(paused))
-        self._enable(True)
-
     def set_child(self, child):
         self.child = child
-        self.paused = None
         self.helper_version = None
-        self.banner.hide()
         for f in self.fields.values():
             f.setText("-")
         self.warning.setText("")
@@ -186,7 +136,12 @@ class PCTab(QWidget):
         def got_cfg(cfg):
             if child is not self.child:
                 return
-            self.fields["mode"].setText(MODE_NAMES.get(cfg.get("mode"), cfg.get("mode")))
+            mode = MODE_NAMES.get(cfg.get("mode"), cfg.get("mode"))
+            ctl = (cfg.get("control") or {}).get("state", domains.CONTROL_FILTERED)
+            if ctl != domains.CONTROL_FILTERED:
+                mode = (f"<span style='color:#c0392b'><b>{domains.CONTROL_NAMES.get(ctl, ctl)}</b></span>"
+                        f"  (Controls tab; the filters are kept: {mode})")
+            self.fields["mode"].setText(mode)
             self.texts["rules_conf"].setPlainText(cfg.get("rules_conf", ""))
             self.texts["allow"].setPlainText("\n".join(cfg.get("allow", [])))
             self.texts["block"].setPlainText("\n".join(cfg.get("block", [])))
@@ -209,7 +164,8 @@ class PCTab(QWidget):
             if child is not self.child:
                 return
             self.helper_version = st.get("helper_version")
-            self._show_paused(child, bool(st.get("paused")), bool(st.get("bypassed")))
+            if st.get("control"):
+                self.control_known.emit(child.id, dict(st["control"], bypassed=bool(st.get("bypassed"))))
             f = self.fields
             win = st.get("platform") == "windows"
             f["platform"].setText(st.get("os_version") or ("Windows" if win else "Ubuntu"))
@@ -270,37 +226,3 @@ class PCTab(QWidget):
             self.status.emit(msg)
 
         run_bg(lambda: self.remotes.get(child).reload(), ok, err)
-
-    def set_paused(self, pause):
-        """Pause (open access) or resume filtering on the selected child's PC."""
-        if not self.child or self.busy:
-            return
-        child = self.child
-        if pause and _older(self.helper_version, (1, 2, 6)):
-            r = QMessageBox.question(
-                self, "Pause filtering",
-                f"{child.name}'s PC has an older Blighter child ({self.helper_version}).  On it, pausing "
-                "also stops activity being recorded.  Update the PC to Blighter 1.2.6 to keep recording "
-                "while paused.\n\nPause anyway?")
-            if r != QMessageBox.Yes:
-                return
-        self._set_busy(True)
-        self.status.emit(f"{'Pausing' if pause else 'Resuming'} filtering on {child.name}'s PC "
-                         "(this can take up to a minute)…")
-
-        def ok(res):
-            self._set_busy(False)
-            msg = res.get("message", "")
-            if res.get("errors"):
-                msg += "  Problems: " + " ".join(res["errors"])[:300]
-            self.status.emit(f"{child.name}: {msg}")
-            if child is self.child:
-                self._show_paused(child, bool(res.get("paused")), bool(res.get("bypassed")))
-                self.refresh()
-
-        def err(msg):
-            self._set_busy(False)
-            self.status.emit(msg)
-
-        run_bg(lambda: (self.remotes.get(child).pause() if pause else self.remotes.get(child).resume()),
-               ok, err)

@@ -1,10 +1,13 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem Blighter Restrictor - resume filtering on a child's Windows PC.
+rem Blighter Restrictor - "Filtered" on a child's Windows PC, set on the PC.
 rem
-rem Purpose: switch filtering back ON after "Pause Blighter Child.cmd":
-rem firewall, proxy settings and the self-repair task are applied again.
-rem Asks for administrator rights first.
+rem Purpose: the same as Filtered on the parent app's Controls tab, for a
+rem parent at the child's PC: the filters apply again after Open all or Block
+rem all.  It also switches Blighter back on if an administrator switched it
+rem off completely for troubleshooting (blighter-system.ps1 off).
+rem Asks for administrator rights first.  (Replaces 1.2.x's "Resume Blighter
+rem Child.cmd".)
 rem
 rem Copyright (C) 2026 Ian Packer
 rem SPDX-License-Identifier: GPL-3.0-or-later
@@ -19,6 +22,6 @@ if errorlevel 1 (
     powershell.exe -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ProgramData%\BlighterChild\blighter-system.ps1" resume
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$r = & %ProgramData%\BlighterChild\blighter-apply.cmd filtered local | ConvertFrom-Json; Write-Host $r.message; if ($r.errors) { $r.errors | ForEach-Object { Write-Host $_ -ForegroundColor Red } }"
 echo.
 pause
