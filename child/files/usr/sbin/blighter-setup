@@ -194,7 +194,7 @@ fi
 
 CHILD=${1:-}
 # Discord switch: kept from an earlier setup unless --no-discord is given;
-# the parent app can change it later (Rules tab, "Allow Discord").
+# the parent app can change it later (Filters tab, "Allow Discord").
 VOICE=yes
 if [ -r "$CONF" ] && grep -qE '^\s*ALLOW_VOICE_UDP\s*=\s*"?no' "$CONF"; then VOICE=no; fi
 REPLACE_SQUID=no
@@ -276,17 +276,17 @@ fi
 if [ "$HOME_ALLOWED" = yes ] && [ -n "$HOME_NETS" ]; then
     echo "Home network allowed (printers, file sharing): $HOME_NETS${HOME_NAME:+ ($HOME_NAME)}"
 elif [ "$HOME_ALLOWED" = yes ]; then
-    warn "This PC is not on a private home network now - set the home network later in the parent app (Rules tab)."
+    warn "This PC is not on a private home network now - set the home network later in the parent app (Filters tab)."
 fi
 cat > "$CONF" <<EOF
 # Blighter Restrictor - which account on this PC is filtered.
 CHILD_USER="$CHILD"
 # yes = Discord allowed: its web addresses through Squid and outgoing
 # UDP 50000-65535 for voice/video calls.  Changed by the parent app's
-# "Allow Discord" switch (Rules tab).
+# "Allow Discord" switch (Filters tab).
 ALLOW_VOICE_UDP="$VOICE"
 # Home network access (printers, NAS...): yes/no, the subnet(s), and the
-# network's name when recorded.  Changed in the parent app (Rules tab).
+# network's name when recorded.  Changed in the parent app (Filters tab).
 HOME_NET_ALLOWED="$HOME_ALLOWED"
 HOME_NETS="$HOME_NETS"
 HOME_NET_NAME="$HOME_NAME"

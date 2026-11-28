@@ -5,7 +5,7 @@ component (Ubuntu or Windows PCs), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.2.8
+# Blighter Restrictor 1.2.9
 
 Monitor and restrict your children's web access on their Linux or
 Windows 10/11 PCs.
@@ -76,7 +76,7 @@ will be done if there is sufficient interest.
  Parent PC (Linux / Windows)                Child PC (Linux / Windows)
  ┌──────────────────────────┐   SSH, pw   ┌──────────────────────────────────┐
  │ Blighter Restrictor app  │────────────▶│ blighter account                  │
- │  Rules / Activity / PC   │             │                                   │
+ │ Filters / Activity / PC  │             │                                   │
  └──────────────────────────┘             │ Squid 127.0.0.1:3128  ── filters  │
                                           │ Firewall: child's account may     │
                                           │  only reach Squid, DNS, UDP voice │
@@ -107,10 +107,10 @@ will be done if there is sufficient interest.
   reach printers, NAS drives and other devices on the home network's
   subnet(s) directly, and web pages on them go through Squid without being
   blocked. Setup records the private network (10.x, 172.16-31.x or 192.168.x)
-  the PC is on; the Rules tab can change it, including to other ranges
+  the PC is on; the Filters tab can change it, including to other ranges
   (with a warning, because websites in a non-private range would bypass the
   filter).
-* **Discord** has its own per-child switch, *Allow Discord* (Rules tab). It
+* **Discord** has its own per-child switch, *Allow Discord* (Filters tab). It
   covers Discord's web addresses and, for voice and video calls, outgoing
   UDP 50000-65535 plus secure connections to Discord's voice servers
   (`*.discord.media`) on Cloudflare's ports 2053, 2083, 2087, 2096 and 8443,
@@ -118,7 +118,7 @@ will be done if there is sufficient interest.
   that UDP range is open to **any** program, so a child who is an
   administrator could run a VPN on a port in that range. For tight control,
   make the child a standard user, or switch Discord off.
-* **Opera downloads are blocked** by default (*Block Opera downloads*, Rules
+* **Opera downloads are blocked** by default (*Block Opera downloads*, Filters
   tab). Opera has a free built-in VPN that can't be switched off, so Squid
   refuses opera.com and Opera's download servers. An Opera that's already
   installed isn't removed. Switch it off per child if you want Opera.
@@ -129,10 +129,10 @@ will be done if there is sufficient interest.
 
 ## 1. Install the parent app (first)
 
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.8_all.deb`, then start
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.9_all.deb`, then start
 *Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
 
-**Windows:** run `BlighterRestrictor-Setup-1.2.8.exe` (see "Building for
+**Windows:** run `BlighterRestrictor-Setup-1.2.9.exe` (see "Building for
 Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
 click *More info → Run anyway*.
 
@@ -145,7 +145,7 @@ should ideally **not** be an administrator. The builds targeted Debian
 style Linux and have been tested on Ubuntu 26.04
 
 ```bash
-sudo apt install ./blighter-child_1.2.8_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.2.9_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
@@ -171,7 +171,7 @@ Later, as a parent on the child's PC:
   the new one in the parent app with *Edit*).
 
 Notes:
-* Discord is allowed by default; switch it off or on in the parent app (Rules
+* Discord is allowed by default; switch it off or on in the parent app (Filters
   tab, *Allow Discord*).
   Running setup again keeps the earlier choice.
 * Upgrading from an earlier version rewrites the Squid rules with the new settings
@@ -189,7 +189,7 @@ administrator account** on the child's PC, not the child's account.
 
 1. Install the parent app on your own PC first (section 1). The installer's
    first page asks you to confirm this.
-2. Copy `BlighterChild-Setup-1.2.8.exe` to the child's PC.
+2. Copy `BlighterChild-Setup-1.2.9.exe` to the child's PC.
 3. Double-click the setup exe and follow the directions.
 4. It may take a while on some steps, do not give up unless sure it's failed.
 5. Pick the child's account from the list, then
@@ -260,7 +260,7 @@ Notes for Windows:
   this should be rare.
 * Discord (desktop app) uses Windows' proxy setting for text. Voice and video
   use the UDP exception. Both follow the *Allow Discord* switch in the
-  parent app's Rules tab (setup asks for the starting value; `-NoVoice`
+  parent app's Filters tab (setup asks for the starting value; `-NoVoice`
   blocks it without asking).
 * Store apps (Microsoft Store, Xbox, Minecraft from the Store, Mail) are
   usually **offline**. Windows doesn't let them use a proxy on the same
@@ -316,21 +316,26 @@ Notes for Windows:
   checks it, says whether the PC is Ubuntu or Windows (it's recognised
   automatically), and warns if the child is an administrator. Passwords are kept in the system keyring (GNOME Keyring /
   Windows Credential Manager).
-* **Rules tab:** pick the mode and edit the lists, one domain per line:
+* **Filters tab** (called *Rules* before 1.2.9): pick the mode and edit the lists, one domain per line:
   * `.example.com` – the site **and all subdomains** (normal choice)
   * `example.com` – that exact name only
   * `# text` – a comment
   * `*.example.com` and pasted web addresses are converted automatically.
     Duplicates, and entries already covered by a `.domain` entry, are removed.
-  * **Allow Discord** (next to the mode) switches Discord on or off for that
+  * **Allow Discord** (top row, with *Block Opera downloads* and *Home
+    network access*; the mode is on the row below) switches Discord on or off for that
     child, whatever the lists say. Discord lines typed into a list are
     pointed out, because they have no effect. PCs with a child version
     older than 1.2.2 show the switch greyed out.
-  * **Block Opera downloads** (next to Allow Discord, on by default) stops
+  * **Block Opera downloads** (on by default) stops
     Opera being downloaded. PCs older than 1.2.4 show it greyed out.
   * **Apply to PC** sends the lists and the switches. The PC
     checks them with Squid and reloads it. If Squid rejects them, the
     previous rules are restored automatically.
+  * **When a PC can't be reached**, the tab shows the last filters read from
+    or applied to it, in blue italics with a note saying when they were
+    saved, as they may not be current. They can't be changed until the PC
+    answers again (*Reload from PC*).
 * **Finding PCs again:** if a child's PC is not at its last address (the
   router gave it a new one), the app searches the home network for it - the
   /24 network of its last address and of your own PC, SSH port only - and
@@ -356,11 +361,11 @@ Notes for Windows:
   duplicates. The tab says when the activity was last updated, or that it is
   out of date if the PC can't be reached (it keeps retrying). **Right-click** a row to add that site, or its
   parent domain, to the Block or Allow list. Then press *Apply to PC* in
-  the Rules tab.
+  the Filters tab.
   Tip for *Block all, allow some*: sites often need extra domains for images
   and scripts (e.g. `.gstatic.com`, `.cloudfront.net`). Tick *Blocked only*
   to find and allow them.
-* **Allow home network access** (Rules tab, under the mode) switches the
+* **Home network access** (Filters tab, beside the Discord and Opera switches) switches the
   home network on or off for that PC and shows its subnet(s), e.g.
   `192.168.1.0/24 (Home Wi-Fi)`. *Use current network* asks the PC
   which network it's on now. Applied with *Apply to PC*.

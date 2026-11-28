@@ -87,7 +87,7 @@ class PCTab(QWidget):
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self.texts = {}
         self.files = QTabWidget()
-        for key, label in (("rules_conf", "Rules in force"), ("allow", "Allow list"),
+        for key, label in (("rules_conf", "Squid rules in force"), ("allow", "Allow list"),
                            ("block", "Block list"), ("squid_conf", "squid.conf"),
                            ("firewall_rules", "Firewall")):
             t = QPlainTextEdit(readOnly=True)
@@ -240,7 +240,7 @@ class PCTab(QWidget):
             elif h.get("allowed") and h.get("subnets"):
                 f["home_net"].setText("Yes - " + ", ".join(h["subnets"]) + (f"  ({h['name']})" if h.get("name") else ""))
             elif h.get("allowed"):
-                f["home_net"].setText("On, but no home network set (Rules tab)")
+                f["home_net"].setText("On, but no home network set (Filters tab)")
             else:
                 f["home_net"].setText("No")
             f["proxy_locked"].setText(_flag(st.get("proxy_locked")) + (

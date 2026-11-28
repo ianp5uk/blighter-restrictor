@@ -5,7 +5,8 @@
 # online/offline indicator (checked every 20 s) and Add / Edit / Remove /
 # Test / Reconnect / Log out buttons.  Right: three tabs for the selected
 # child -
-#   Rules    - mode, allow/block lists, Allow Discord, home network, Apply
+#   Filters  - mode, allow/block lists, Allow Discord, home network, Apply
+#              (last known filters shown, read-only, while a PC is offline)
 #   Activity - the Squid access log, filters, per-site summary
 #   PC       - what is actually in force on the child's PC, health, Reload
 #              Squid, Pause / Resume filtering
@@ -141,11 +142,11 @@ class MainWindow(QMainWindow):
         ll.addLayout(grid3)
 
         # ---- tabs
-        self.rules = RulesTab(self.remotes)
+        self.rules = RulesTab(self.remotes, self.store)
         self.activity = ActivityTab(self.collector)
         self.pc_tab = PCTab(self.remotes)
         self.tabs = QTabWidget()
-        self.tabs.addTab(self.rules, "Rules")
+        self.tabs.addTab(self.rules, "Filters")
         self.tabs.addTab(self.activity, "Activity")
         self.tabs.addTab(self.pc_tab, "PC")
         self.tabs.currentChanged.connect(self._tab_changed)
@@ -158,6 +159,8 @@ class MainWindow(QMainWindow):
         split.addWidget(left)
         split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
+        split.setChildrenCollapsible(False)
+        split.setHandleWidth(8)           # easier to grab
         split.setSizes([240, 900])
         self.setCentralWidget(split)
 
@@ -362,7 +365,7 @@ class MainWindow(QMainWindow):
             return
         if self.rules.is_dirty():
             r = QMessageBox.question(self, "Unsaved changes",
-                                     f"Discard unsaved rule changes for {self.current.name}?")
+                                     f"Discard unsaved filter changes for {self.current.name}?")
             if r != QMessageBox.Yes:
                 self.list.blockSignals(True)
                 self._populate(self.current.id)
@@ -457,7 +460,7 @@ class MainWindow(QMainWindow):
             return
         if self.rules.is_dirty():
             r = QMessageBox.question(self, "Unsaved changes",
-                                     f"Discard unsaved rule changes for {c.name}?")
+                                     f"Discard unsaved filter changes for {c.name}?")
             if r != QMessageBox.Yes:
                 return
         d = ReconnectDialog(self.store, c, parent=self)
@@ -502,7 +505,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev):
         if self.rules.is_dirty():
-            r = QMessageBox.question(self, "Unsaved changes", "Quit and discard unsaved rule changes?")
+            r = QMessageBox.question(self, "Unsaved changes", "Quit and discard unsaved filter changes?")
             if r != QMessageBox.Yes:
                 ev.ignore()
                 return

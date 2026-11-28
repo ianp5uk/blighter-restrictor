@@ -17,6 +17,9 @@
 # If no keyring is available, passwords are kept in memory for this session
 # only and the user is asked again next time.
 # Display preferences (text size) are kept in settings.json alongside.
+# The last filters read from (or applied to) each PC are kept in
+# last_filters.json, so the Filters tab can show them - marked as not
+# necessarily current - while the PC can't be reached.
 #   Linux:   ~/.config/blighter-restrictor/children.json
 #   Windows: %APPDATA%\BlighterRestrictor\children.json
 #
@@ -69,6 +72,7 @@ class Store:
         self.path = os.path.join(config_dir(), "children.json")
         self.known_hosts = os.path.join(config_dir(), "known_hosts")
         self.settings_path = os.path.join(config_dir(), "settings.json")
+        self.filters_path = os.path.join(config_dir(), "last_filters.json")
         self.children = []
         self._lock = threading.RLock()
         self._memory_pw = {}
@@ -145,6 +149,45 @@ class Store:
         self.children = [c for c in self.children if c.id != child.id]
         self.delete_password(child)
         self.save()
+        self.forget_filters(child)
+
+    # ---- last known filters -----------------------------------------------------
+    def _read_filters(self):
+        try:
+            with open(self.filters_path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (FileNotFoundError, ValueError):
+            return {}
+
+    def _write_filters(self, data):
+        with self._lock:
+            tmp = self.filters_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, self.filters_path)
+
+    def last_filters(self, child):
+        """(saved_time, settings) last read from or applied to this PC, or None.
+        settings has the keys the PC sends: mode, allow, block, discord,
+        home_net, opera."""
+        entry = self._read_filters().get(child.id)
+        if not isinstance(entry, dict) or not isinstance(entry.get("filters"), dict):
+            return None
+        return entry.get("saved", 0), entry["filters"]
+
+    def save_filters(self, child, filters, when):
+        keep = ("mode", "allow", "block", "discord", "home_net", "opera")
+        with self._lock:
+            data = self._read_filters()
+            data[child.id] = {"saved": when, "filters": {k: filters.get(k) for k in keep}}
+            self._write_filters(data)
+
+    def forget_filters(self, child):
+        with self._lock:
+            data = self._read_filters()
+            if data.pop(child.id, None) is not None:
+                self._write_filters(data)
 
     # ---- display settings -------------------------------------------------------
     def get_setting(self, key, default=None):

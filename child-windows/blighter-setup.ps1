@@ -92,7 +92,7 @@ $ErrorActionPreference = "Stop"
 # Progress bars are hidden (they flash on and off and look like a fault);
 # slow steps print their own "still working" lines instead.
 $ProgressPreference    = "SilentlyContinue"
-$Version   = "1.2.8"
+$Version   = "1.2.9"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -525,7 +525,7 @@ if (-not $homeAllowed) {
     } catch { $ErrorActionPreference = "Stop" }
 }
 if ($homeAllowed -eq "yes" -and $homeNets) { Write-Host "Home network allowed (printers, file sharing): $homeNets$(if ($homeName) { " ($homeName)" })" }
-elseif ($homeAllowed -eq "yes") { Warn "This PC is not on a private home network now - set the home network later in the parent app (Rules tab)." }
+elseif ($homeAllowed -eq "yes") { Warn "This PC is not on a private home network now - set the home network later in the parent app (Filters tab)." }
 @"
 # Blighter Restrictor - which account on this PC is the child's.
 # Written by blighter-setup.ps1 $Version.  On Windows the firewall filters the
@@ -534,10 +534,10 @@ CHILD_USER="$Child"
 CHILD_SID="$childSid"
 # yes = Discord allowed: its web addresses through Squid and outgoing
 # UDP 50000-65535 for voice/video calls.  Changed by the parent app's
-# "Allow Discord" switch (Rules tab).
+# "Allow Discord" switch (Filters tab).
 ALLOW_VOICE_UDP="$voice"
 # Home network access (printers, NAS...): yes/no, the subnet(s), and the
-# network's name when recorded.  Changed in the parent app (Rules tab).
+# network's name when recorded.  Changed in the parent app (Filters tab).
 HOME_NET_ALLOWED="$homeAllowed"
 HOME_NETS="$homeNets"
 HOME_NET_NAME="$homeName"

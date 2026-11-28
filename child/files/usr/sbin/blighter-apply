@@ -52,7 +52,7 @@ import domains  # noqa: E402  (shared validation, same file as the parent app)
 import blockpage  # noqa: E402  (neutral error pages, same file as the Windows helper)
 import logtail  # noqa: E402  (incremental log reading, same file as the Windows helper)
 
-VERSION = "1.2.8"
+VERSION = "1.2.9"
 BASE = "/etc/squid/blighter"
 MODE_FILE = os.path.join(BASE, "mode")
 ALLOW_FILE = os.path.join(BASE, "allow.list")
@@ -71,10 +71,8 @@ MAX_LOG_LINES = 100000
 DEFAULT_ALLOW = """# Sites allowed when the mode is "Block all, allow some".
 # One domain per line.  A leading dot means "this domain and all subdomains".
 # (Discord is not in this list: it has its own "Allow Discord" switch.)
-# Schoolwork basics
-.wikipedia.org
-.bbc.co.uk
-.bbci.co.uk
+# A placeholder to show the format - replace it with the sites to allow.
+.example.com
 """
 
 DEFAULT_BLOCK = """# Sites blocked when the mode is "Allow all, block some".

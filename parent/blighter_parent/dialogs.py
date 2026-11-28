@@ -19,8 +19,11 @@
 #                    address has a different identity (Blighter reinstalled,
 #                    or a new PC) the parent must confirm before the saved
 #                    identity is replaced.  The child's name, username and
-#                    the PC's own rules and activity log are not changed.
+#                    the PC's own filters and activity log are not changed.
 #   ask_password     asks for a password that is not saved.
+#   FitDialog        base for the two dialogs: sized from the text size and
+#                    the main window (not fixed pixels), and grows to fit
+#                    messages as they appear, so nothing overlaps.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -35,6 +38,7 @@ import dataclasses
 import ipaddress
 import re
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QSpinBox, QVBoxLayout)
@@ -50,18 +54,59 @@ WHERE_TO_FIND = ("To see the address on the child's PC:<br>"
                  "&nbsp;&nbsp;&nbsp;&nbsp;<b><nobr>C:\\ProgramData\\BlighterChild\\Blighter-Details.cmd</nobr></b><br>"
                  "&nbsp;&nbsp;<b>Ubuntu</b>: open a Terminal and type <b><nobr>sudo blighter-setup --details</nobr></b>")
 
+class FitDialog(QDialog):
+    """A dialog sized for its text, not in fixed pixels (since 1.2.9).
+
+    Its width follows the text size (View > Text size) and the main window:
+    at least `chars` average characters wide, and at least 45% of the main
+    window's width (capped to 90% of the screen).  Its height grows to fit
+    word-wrapped messages when they appear (call refit()), so nothing is
+    squeezed or overlaps at large text sizes."""
+
+    chars = 60
+
+    def _target_width(self):
+        w = self.fontMetrics().averageCharWidth() * self.chars
+        parent = self.parentWidget()
+        if parent is not None:
+            w = max(w, int(parent.window().width() * 0.45))
+        screen = self.screen()
+        if screen is not None:
+            w = min(w, int(screen.availableGeometry().width() * 0.9))
+        return w
+
+    def showEvent(self, event):
+        self.setMinimumWidth(self._target_width())
+        self._grow()
+        super().showEvent(event)
+
+    def refit(self):
+        """Grow to fit new text (after the event loop has laid it out)."""
+        QTimer.singleShot(0, self._grow)
+
+    def _grow(self):
+        lay = self.layout()
+        width = max(self.width(), self.minimumWidth())
+        need = lay.heightForWidth(width) if lay is not None and lay.hasHeightForWidth() else -1
+        if need < 0:
+            need = self.sizeHint().height()
+        if need > self.height() or width > self.width():
+            self.resize(width, max(need, self.height()))
+
+
 # Ubuntu usernames, plus Windows local account names (letters, digits,
 # spaces, dots, hyphens, underscores; up to 20 characters on Windows).
 _USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9 _.-]{0,31}$")
 
 
-class ChildDialog(QDialog):
+class ChildDialog(FitDialog):
+    chars = 62
+
     def __init__(self, store, child=None, parent=None):
         super().__init__(parent)
         self.store = store
         self.original = child
         self.setWindowTitle("Edit child" if child else "Add child")
-        self.setMinimumWidth(460)
 
         self.name = QLineEdit(child.name if child else "")
         self.ip = QLineEdit(child.ip if child else "")
@@ -142,13 +187,17 @@ class ChildDialog(QDialog):
             raise ValueError("Please enter the admin password.")
         return c, pw
 
+    def _result(self, text):
+        self.result_label.setText(text)
+        self.refit()
+
     def _test(self):
         try:
             child, pw = self._collect()
         except ValueError as e:
-            self.result_label.setText(f"<span style='color:#c0392b'>{e}</span>")
+            self._result(f"<span style='color:#c0392b'>{e}</span>")
             return
-        self.result_label.setText("Connecting and checking the PC (this can take up to a minute)…")
+        self._result("Connecting and checking the PC (this can take up to a minute)…")
 
         def job():
             r = Remote(child, pw, self.store.known_hosts, discover=False)
@@ -171,12 +220,12 @@ class ChildDialog(QDialog):
                 msg += (f"<br><span style='color:#c0392b'>Warning: the PC was set up for "
                         f"'{st.get('child_user')}', not '{child.child_user}'.</span>")
             msg += admin_warning_html(st)
-            self.result_label.setText(msg)
+            self._result(msg)
 
         def err(m):
             if self.original:
                 m += "  (If the PC was reinstalled, close this and use Reconnect.)"
-            self.result_label.setText(f"<span style='color:#c0392b'>{m}</span>")
+            self._result(f"<span style='color:#c0392b'>{m}</span>")
 
         run_bg(job, ok, err)
 
@@ -196,8 +245,9 @@ class ChildDialog(QDialog):
         self.accept()
 
 
-class ReconnectDialog(QDialog):
+class ReconnectDialog(FitDialog):
     """Find a child's PC again, or connect it at a new address / identity."""
+    chars = 78
 
     def __init__(self, store, child, parent=None):
         super().__init__(parent)
@@ -205,10 +255,9 @@ class ReconnectDialog(QDialog):
         self.child = child
         self.new_key = ""               # identity offered at the address, if different
         self.setWindowTitle(f"Reconnect {child.name}'s PC")
-        self.setMinimumWidth(560)
 
         intro = QLabel(f"Use this if the app cannot find <b>{child.name}</b>'s PC, or after Blighter was "
-                       f"reinstalled on it.  {child.name}'s name, username, the PC's rules and its "
+                       f"reinstalled on it.  {child.name}'s name, username, the PC's filters and its "
                        "activity log are not changed.")
         intro.setWordWrap(True)
         self.btn_find = QPushButton("Find automatically")
@@ -257,6 +306,7 @@ class ReconnectDialog(QDialog):
 
     def _say(self, text, colour=None):
         self.message.setText(f"<span style='color:{colour}'>{text}</span>" if colour else text)
+        self.refit()
 
     def _find(self):
         c = self.child
@@ -331,6 +381,7 @@ class ReconnectDialog(QDialog):
                 return
             self._busy(False)
             self.btn_replace.show()
+            self.refit()
             self._say(f"The computer at {ip} is not the one saved as {c.name}'s PC.<br>This happens after "
                       f"Blighter is reinstalled on it, or with a different computer.  Press the button below "
                       f"only if this really is {c.name}'s PC.", "#c0392b")

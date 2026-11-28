@@ -12,7 +12,7 @@
 # default) only limits the history fetched when collection starts; "Load
 # history" fetches more and adds it without duplicates.
 # Right-click a row to add the site (or its parent domain) to the allow or
-# block list in the Rules tab.
+# block list in the Filters tab.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
 
 from . import accesslog
 from .collector import DEFAULT_LINES, POLL_SECONDS
+from .flowlayout import FlowLayout, hbox
 from .shared import domains
 
 RANGES = [("Last hour", 3600), ("Last 24 hours", 86400), ("Today", "today"),
@@ -117,15 +118,15 @@ class ActivityTab(QWidget):
         self.state_label = QLabel("")
         self.state_label.setWordWrap(True)
 
-        top = QHBoxLayout()
-        top.addWidget(QLabel("First fetch: last"))
-        top.addWidget(self.lines)
-        top.addWidget(QLabel("lines"))
+        # One row that wraps in a narrow window or at large text sizes.
+        top_w = QWidget()
+        top = FlowLayout(top_w)
+        top.addWidget(hbox(QLabel("First fetch: last"), self.lines, QLabel("lines")))
         top.addWidget(self.rotated)
         top.addWidget(self.btn_refresh)
-        top.addSpacing(12)
         top.addWidget(self.range)
-        top.addWidget(self.search, 1)
+        self.search.setMinimumWidth(160)
+        top.addWidget(self.search, stretch=True)
         top.addWidget(self.blocked_only)
 
         self.req_model = _Model(
@@ -148,7 +149,7 @@ class ActivityTab(QWidget):
         self.views.addTab(self.sum_view, "Summary by site")
 
         lay = QVBoxLayout(self)
-        lay.addLayout(top)
+        lay.addWidget(top_w)
         lay.addWidget(self.state_label)
         lay.addWidget(self.views, 1)
         lay.addWidget(self.count_label)

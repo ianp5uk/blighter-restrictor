@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# Blighter Restrictor - "Rules" tab.
+# Blighter Restrictor - "Filters" tab (called "Rules" before 1.2.9).
 #
 # Purpose: show and edit one child's filtering mode and domain lists, check
 # them as you type (same rules as the PC), and apply them.  Applying
@@ -24,6 +24,14 @@
 # number.  Selecting another PC starts a new sequence and clears "busy", so
 # a slow or offline PC can't leave the tab stuck; replies that arrive after
 # the switch are ignored for the tab (an apply's result is still reported).
+# Last known filters: every read from the PC and every successful apply is
+# saved on this PC (config_store.last_filters).  When a PC is selected they
+# are shown at once - in blue italics, read-only, with a notice saying when
+# they were saved and that they may not be current - until the PC answers.
+# If it can't be reached they stay that way; nothing can be changed or
+# applied until it is back ("Reload from PC" tries again).
+# Layout: the Discord, Opera and home network switches on one row, the mode
+# below; both rows wrap at large text sizes or in a narrow window.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -34,6 +42,8 @@
 # LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
 
+import time
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
@@ -41,6 +51,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QGroupBox, QHBoxLayout, 
                                QPushButton, QRadioButton, QSplitter, QVBoxLayout,
                                QWidget)
 
+from .flowlayout import FlowLayout, hbox
 from .shared import domains
 from .workers import run_bg
 
@@ -49,8 +60,8 @@ HELP = ("One domain per line.  <b>.example.com</b> = the site and all its subdom
         "<b>*.example.com</b> and pasted web addresses are converted automatically.")
 
 
-DISCORD_TIP = ("Discord is controlled here, not by the lists.  Takes effect when you "
-               "press 'Apply to PC'.")
+DISCORD_TIP = ("Discord text, voice and video calls.  Discord is controlled here, not by the "
+               "lists.  Takes effect when you press 'Apply to PC'.")
 DISCORD_OLD_TIP = "This PC's Blighter child version has no Discord switch - update it to 1.2.2 or later."
 OPERA_TIP = ("Blocks opera.com and Opera's download servers, so the Opera browser can't be "
              "downloaded (Opera's built-in VPN can't be switched off).  An Opera that is already "
@@ -60,7 +71,10 @@ HOME_OLD_TIP = ("This PC's Blighter child version has no home network setting - 
                 "update it to 1.2.3 or later.")
 WAIT_TIP = "Waiting for the PC to answer…"
 FAIL_TIP = "Couldn't read this PC's settings - press 'Reload from PC' to try again."
-HOME_TIP = ("Lets the PC reach the home network directly: printers, NAS drives and other home "
+STALE_COLOUR = "#1f5fbf"
+STALE_STYLE = (f"QPlainTextEdit, QLineEdit {{ color: {STALE_COLOUR}; font-style: italic; }}"
+               f"QCheckBox:disabled, QRadioButton:disabled {{ color: {STALE_COLOUR}; font-style: italic; }}")
+HOME_TIP = ("Allow home network access: lets the PC reach the home network directly - printers, NAS drives and other home "
             "devices.  Blighter controls internet access only.  Give the home network's subnet(s), "
             "e.g. 192.168.1.0/24, separated by spaces.")
 
@@ -68,9 +82,12 @@ HOME_TIP = ("Lets the PC reach the home network directly: printers, NAS drives a
 class RulesTab(QWidget):
     status = Signal(str)
 
-    def __init__(self, remotes, parent=None):
+    def __init__(self, remotes, store=None, parent=None):
         super().__init__(parent)
         self.remotes = remotes
+        self.store = store
+        self.stale = False      # showing last known filters, not the PC's own answer
+        self._conn_error = ""   # last failure to read the PC, kept in the messages list
         self.child = None
         self.loaded = None  # (mode, allow_text, block_text, discord, home, opera) as last read from the PC
         self.discord_supported = False
@@ -86,40 +103,43 @@ class RulesTab(QWidget):
         self.mode_group.addButton(self.rb_block)
         self.mode_group.addButton(self.rb_allow)
         self.rb_block.setChecked(True)
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("<b>Mode:</b>"))
-        mode_row.addWidget(self.rb_block)
-        mode_row.addWidget(self.rb_allow)
-        mode_row.addSpacing(24)
-        self.cb_discord = QCheckBox("Allow Discord (text, voice and video calls)")
+        self.cb_discord = QCheckBox("Allow Discord")
         self.cb_discord.setToolTip(DISCORD_TIP)
         self.cb_discord.toggled.connect(lambda *_: self._changed())
-        mode_row.addWidget(self.cb_discord)
-        mode_row.addSpacing(12)
         self.cb_opera = QCheckBox("Block Opera downloads")
         self.cb_opera.setToolTip(OPERA_TIP)
         self.cb_opera.toggled.connect(lambda *_: self._changed())
-        mode_row.addWidget(self.cb_opera)
-        mode_row.addStretch()
         self.dirty_label = QLabel("")
-        mode_row.addWidget(self.dirty_label)
 
-        self.cb_home = QCheckBox("Allow home network access (printers, NAS…):")
+        self.cb_home = QCheckBox("Home network access:")
         self.cb_home.setToolTip(HOME_TIP)
         self.home_edit = QLineEdit()
         self.home_edit.setPlaceholderText("e.g. 192.168.1.0/24")
         self.home_edit.setToolTip(HOME_TIP)
+        self.home_edit.setMinimumWidth(140)
         self.home_label = QLabel("")
         self.btn_home = QPushButton("Use current network")
         self.btn_home.setToolTip("Ask the PC which network it is on now")
         self.cb_home.toggled.connect(lambda *_: self._changed())
         self.home_edit.textChanged.connect(lambda *_: self._changed())
         self.btn_home.clicked.connect(self.use_current_network)
-        home_row = QHBoxLayout()
-        home_row.addWidget(self.cb_home)
-        home_row.addWidget(self.home_edit, 1)
-        home_row.addWidget(self.home_label)
-        home_row.addWidget(self.btn_home)
+        # Row 1: the switches (wraps when narrow).
+        switches = QWidget()
+        row1 = FlowLayout(switches)
+        row1.addWidget(self.cb_discord)
+        row1.addWidget(self.cb_opera)
+        row1.addWidget(hbox(self.cb_home, self.home_edit, self.home_label, self.btn_home, stretch_index=1),
+                       stretch=True)
+        # Row 2: the mode, and the "Unsaved changes" note.
+        modes = QWidget()
+        row2 = FlowLayout(modes)
+        row2.addWidget(hbox(QLabel("<b>Mode:</b>"), self.rb_block, self.rb_allow))
+        row2.addWidget(self.dirty_label)
+        # Shown while the tab holds last known filters rather than the PC's answer.
+        self.stale_label = QLabel("")
+        self.stale_label.setWordWrap(True)
+        self.stale_label.setStyleSheet(f"color: {STALE_COLOUR}; font-weight: bold;")
+        self.stale_label.hide()
 
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self.block_edit = QPlainTextEdit()
@@ -168,8 +188,9 @@ class RulesTab(QWidget):
         btns.addWidget(self.btn_apply)
 
         lay = QVBoxLayout(self)
-        lay.addLayout(mode_row)
-        lay.addLayout(home_row)
+        lay.addWidget(switches)
+        lay.addWidget(modes)
+        lay.addWidget(self.stale_label)
         lay.addWidget(help_label)
         lay.addWidget(split, 1)
         lay.addLayout(btns)
@@ -192,13 +213,44 @@ class RulesTab(QWidget):
         return self.loaded is not None and self._current() != self.loaded
 
     def _set_enabled(self, on):
-        for w in (self.rb_block, self.rb_allow, self.block_edit, self.allow_edit,
-                  self.btn_reload, self.btn_tidy, self.btn_revert, self.btn_apply):
-            w.setEnabled(on)
-        self.cb_discord.setEnabled(on and self.discord_supported)
-        self.cb_opera.setEnabled(on and self.opera_supported)
+        edit = on and not self.stale      # last known filters are read-only
+        for w in (self.rb_block, self.rb_allow, self.btn_tidy, self.btn_revert, self.btn_apply):
+            w.setEnabled(edit)
+        self.btn_reload.setEnabled(on)
+        # The lists stay scrollable and selectable when read-only.
+        for e in (self.block_edit, self.allow_edit):
+            e.setEnabled(on or self.stale)
+            e.setReadOnly(not edit)
+        self.cb_discord.setEnabled(edit and self.discord_supported)
+        self.cb_opera.setEnabled(edit and self.opera_supported)
         for w in (self.cb_home, self.home_edit, self.btn_home):
-            w.setEnabled(on and self.home_supported)
+            w.setEnabled(edit and self.home_supported)
+
+    def _set_stale(self, saved=None, reading=False):
+        """saved=None: showing the PC's own answer.  Otherwise showing the
+        filters saved at that time; reading=True while the PC is being asked."""
+        self.stale = saved is not None
+        self.setStyleSheet(STALE_STYLE if self.stale else "")
+        if not self.stale:
+            self.stale_label.hide()
+            return
+        when = time.strftime("%H:%M on %d %b %Y", time.localtime(saved)) if saved else "an earlier session"
+        tail = ("Reading the current ones from the PC…" if reading else
+                "This PC isn't connected, so they may not be current.  They can't be changed "
+                "until it is back - press 'Reload from PC' to try again.")
+        self.stale_label.setText(f"Last known filters, from {when}.  {tail}")
+        self.stale_label.show()
+
+    def _remember(self, child, filters):
+        if self.store is not None and child is not None:
+            try:
+                self.store.save_filters(child, filters, time.time())
+            except OSError:
+                pass      # only a convenience - never stop the tab working
+
+    def _show_filters(self, data):
+        self._fill(data.get("mode"), data.get("allow", []) or [], data.get("block", []) or [],
+                   data.get("discord"), data.get("home_net"), data.get("opera"))
 
     def _changed(self):
         allow_mode = self.rb_allow.isChecked()
@@ -210,6 +262,8 @@ class RulesTab(QWidget):
 
     def _validate(self):
         self.issues.clear()
+        if self._conn_error:
+            self.issues.addItem("ERROR " + self._conn_error)
         errors = []
         for name, edit in (("Block", self.block_edit), ("Allow", self.allow_edit)):
             _, notes, errs = domains.clean_list(edit.toPlainText().splitlines())
@@ -305,7 +359,16 @@ class RulesTab(QWidget):
         self.busy = False
         self.child = child
         self.loaded = None
-        self._fill(domains.MODE_BLOCKLIST, [], [], answered=False)
+        self._conn_error = ""
+        cached = self.store.last_filters(child) if (child and self.store is not None) else None
+        if cached:
+            self._show_filters(cached[1])
+            self._set_stale(cached[0], reading=True)
+            self._saved_at = cached[0]
+        else:
+            self._set_stale(None)
+            self._saved_at = None
+            self._fill(domains.MODE_BLOCKLIST, [], [], answered=False)
         self.loaded = None
         self._set_enabled(False)
         if child:
@@ -316,22 +379,30 @@ class RulesTab(QWidget):
             return
         child = self.child
         tag = self._begin()
-        self.status.emit(f"Reading rules from {child.name}'s PC…")
+        if self.stale:
+            self._set_stale(self._saved_at, reading=True)
+        self.status.emit(f"Reading filters from {child.name}'s PC…")
 
         def ok(data):
             if not self._end(tag):
                 return
-            self._fill(data.get("mode"), data.get("allow", []), data.get("block", []), data.get("discord"),
-                       data.get("home_net"), data.get("opera"))
+            self._conn_error = ""
+            self._set_stale(None)
+            self._show_filters(data)
+            self._remember(child, data)
             self._set_enabled(True)
-            self.status.emit(f"Rules loaded from {child.name}'s PC.")
+            self.status.emit(f"Filters loaded from {child.name}'s PC.")
 
         def err(msg):
             if not self._end(tag):
                 return
             self.status.emit(msg)
+            self._conn_error = msg
             self.issues.clear()
             self.issues.addItem("ERROR " + msg)
+            if self.stale:
+                self._set_stale(self._saved_at, reading=False)
+                self._set_enabled(True)          # read-only; only 'Reload from PC' works
             self.btn_reload.setEnabled(True)    # so 'Reload from PC' can try again
             if self.loaded is None:
                 self._set_tips(FAIL_TIP, FAIL_TIP, FAIL_TIP)
@@ -357,6 +428,9 @@ class RulesTab(QWidget):
 
     def add_domain(self, which, domain):
         """Called from the Activity tab: which is 'allow' or 'block'."""
+        if self.stale or self.loaded is None:
+            return (f"Can't add {domain} yet - the filters can only be changed once the PC "
+                    "has answered (Filters tab, 'Reload from PC').")
         edit = self.allow_edit if which == "allow" else self.block_edit
         lines = edit.toPlainText().rstrip().splitlines()
         if domain in (l.strip() for l in lines):
@@ -366,7 +440,7 @@ class RulesTab(QWidget):
         return f"Added {domain} to the {which} list - press 'Apply to PC' to make it live."
 
     def apply(self):
-        if not self.child or self.busy:
+        if not self.child or self.busy or self.stale:
             return
         if not self._validate():
             QMessageBox.warning(self, "Fix the lists first",
@@ -385,17 +459,19 @@ class RulesTab(QWidget):
                     "name": self.home_name}
         tag = self._begin()
         self._set_enabled(False)
-        self.status.emit(f"Applying rules to {child.name}'s PC…")
+        self.status.emit(f"Applying filters to {child.name}'s PC…")
 
         def ok(res):
             mine = self._end(tag)
             if mine:
                 self._set_enabled(True)
             if res.get("ok"):
+                applied = {"mode": res.get("mode"), "allow": res.get("allow", []), "block": res.get("block", []),
+                           "discord": res.get("discord", discord), "home_net": res.get("home_net", home),
+                           "opera": res.get("opera", opera)}
+                self._remember(child, applied)
                 if mine:
-                    self._fill(res.get("mode"), res.get("allow", []), res.get("block", []),
-                               res.get("discord", discord), res.get("home_net", home),
-                               res.get("opera", opera))
+                    self._show_filters(applied)
                     for w in res.get("warnings", []):
                         self.issues.addItem("Squid: " + w)
                 self.status.emit(f"{child.name}: {res.get('message')}")
@@ -417,7 +493,7 @@ class RulesTab(QWidget):
 
     def use_current_network(self):
         """Fill in the network(s) the PC is on now (private ranges first)."""
-        if not self.child or self.busy:
+        if not self.child or self.busy or self.stale:
             return
         child = self.child
         tag = self._begin()
