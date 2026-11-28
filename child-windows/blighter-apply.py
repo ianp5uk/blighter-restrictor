@@ -59,7 +59,7 @@ import domains  # noqa: E402  (shared validation, same file as the parent app)
 import blockpage  # noqa: E402  (neutral error pages, same file as the Ubuntu helper)
 import logtail  # noqa: E402  (incremental log reading, same file as the Ubuntu helper)
 
-VERSION = "1.2.7"
+VERSION = "1.2.8"
 PLATFORM = "windows"
 SERVICE = "squidsrv"            # service name used by Diladele's installer
 CHILD_CONF = os.path.join(HERE, "child.conf")
