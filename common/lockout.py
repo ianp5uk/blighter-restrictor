@@ -454,10 +454,11 @@ class Engine:
         due = []
         sched = self.schedule()
         ext = self.extension(now)
-        if not ext:
+        if not ext and os.path.exists(self._path(EXTENSION_FILE)):
             self._remove(EXTENSION_FILE)
         ls = self._json(LOCKSTATE_FILE)
         ls.setdefault("locked", False)
+        before = json.dumps(ls, sort_keys=True)
         st = state_at(sched, now, ext)
         admin = self.p.child_is_admin()
         enforce = st["limited"] and admin is False and bool(self.p.child_user()) and not self.p.bypassed()
@@ -509,7 +510,8 @@ class Engine:
                 self._warn_lock(ls, key, remaining, sched, when_text(after["next_unlock"], now))
                 due.append(remaining)
                 due += [remaining - t for t in thresholds(sched["warn"]) if remaining - t > 0]
-        self._write(LOCKSTATE_FILE, ls)
+        if json.dumps(ls, sort_keys=True) != before:      # only when something changed
+            self._write(LOCKSTATE_FILE, ls)
 
         pend = self.pending()
         if pend:

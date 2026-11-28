@@ -778,18 +778,32 @@ class _UserInfo1020(ctypes.Structure):
     _fields_ = [("units_per_week", ctypes.c_uint32), ("logon_hours", ctypes.POINTER(ctypes.c_ubyte))]
 
 
+class _UserInfo11(ctypes.Structure):
+    """USER_INFO_11 (NetUserGetInfo level 11), for its logon hours."""
+    _fields_ = [("name", ctypes.c_wchar_p), ("comment", ctypes.c_wchar_p), ("usr_comment", ctypes.c_wchar_p),
+                ("full_name", ctypes.c_wchar_p), ("priv", ctypes.c_uint32), ("auth_flags", ctypes.c_uint32),
+                ("password_age", ctypes.c_uint32), ("home_dir", ctypes.c_wchar_p), ("parms", ctypes.c_wchar_p),
+                ("last_logon", ctypes.c_uint32), ("last_logoff", ctypes.c_uint32),
+                ("bad_pw_count", ctypes.c_uint32), ("num_logons", ctypes.c_uint32),
+                ("logon_server", ctypes.c_wchar_p), ("country_code", ctypes.c_uint32),
+                ("workstations", ctypes.c_wchar_p), ("max_storage", ctypes.c_uint32),
+                ("units_per_week", ctypes.c_uint32), ("logon_hours", ctypes.POINTER(ctypes.c_ubyte)),
+                ("code_page", ctypes.c_uint32)]
+
+
 def _logon_hours(user):
-    """The account's 21-byte logon hours (bytes), b"" for "all", or None if not found."""
+    """The account's 21-byte logon hours (bytes), b"" for "all", or (None, error) if unreadable."""
     net = ctypes.windll.netapi32
-    buf = ctypes.POINTER(_UserInfo1020)()
-    if net.NetUserGetInfo(None, _net_user_name(user), 1020, ctypes.byref(buf)) != 0:
-        return None
+    buf = ctypes.POINTER(_UserInfo11)()
+    rc = net.NetUserGetInfo(None, _net_user_name(user), 11, ctypes.byref(buf))
+    if rc != 0:
+        return None, rc
     try:
         info = buf.contents
         if not info.logon_hours:
-            return b""
+            return b"", 0
         hours = bytes(info.logon_hours[i] for i in range(21))
-        return b"" if hours == b"\xff" * 21 else hours
+        return (b"" if hours == b"\xff" * 21 else hours), 0
     finally:
         net.NetApiBufferFree(buf)
 
@@ -844,9 +858,9 @@ class WindowsPC:
         user = self.child_user()
         if not _lockable(user):
             return False, f"'{user}' is not an account Blighter may lock."
-        current = _logon_hours(user)
+        current, rc = _logon_hours(user)
         if current is None:
-            return False, f"No account '{user}' on this PC."
+            return False, f"Could not read the account '{user}' (Windows error {rc})."
         never = b"\x00" * 21
         if locked:
             if current == never:
