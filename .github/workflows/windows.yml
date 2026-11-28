@@ -633,7 +633,8 @@ jobs:
           if (-not $r.ok -or $r.login.pending) { throw "cancel failed: $($r.message)" }
           Write-Host "OK: warned restart waited and was cancelled"
           # The warning box script parses (it can't be shown without a desktop session here).
-          $null = [System.Management.Automation.Language.Parser]::ParseFile("C:\ProgramData\BlighterChild\blighter-warning.ps1", [ref]$null, [ref]$errs)
+          $tok = $null; $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("C:\ProgramData\BlighterChild\blighter-warning.ps1", [ref]$tok, [ref]$errs)
           if ($errs) { throw "blighter-warning.ps1: $errs" }
           # Leave it locked: the uninstaller must unlock it (checked after removal).
           $r = '{"enabled":true,"days":[[],[],[],[],[],[],[]],"warn":0,"at_lock":"logout"}' | & $h login-set | ConvertFrom-Json
