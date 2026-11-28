@@ -3,8 +3,9 @@
 #
 # Purpose: one place for the parent app's styling, using only Qt's built-in
 # palette, style sheet and cursor features (plus one Windows call for the
-# title bar colour).  Applied in light mode only - in dark mode the system
-# look is left alone so nothing becomes unreadable.
+# title bar colour).  Mostly applied in light mode only - in dark mode the
+# system look is left alone so nothing becomes unreadable, except the Linux
+# check boxes and radio buttons (see below).
 #   * the grey around the white panels is made slightly darker
 #   * Windows 11: the title bar ("Blighter Restrictor x.y.z") is tinted a
 #     little darker so it stands apart (not possible on Linux - GNOME draws
@@ -16,7 +17,10 @@
 #     drop-downs and tabs
 #   * Linux: a Segoe UI-like font, and Windows-style check boxes / radio
 #     buttons (blue with a white tick / dot when on) that grow with the text
-#     size from View > Larger / Smaller text
+#     size from View > Larger / Smaller text.  Since 1.4.0 they are a little
+#     larger and have a 2-pixel border, and dark mode gets its own colours
+#     (a light border on a dark box), because GNOME's dark-mode ones are
+#     hard to see - especially when not ticked
 # The colours are constants below so they can be adjusted easily.
 #
 # Copyright (C) 2026 Ian Packer
@@ -49,7 +53,15 @@ BTN_BG = "#fdfdfd"
 BTN_BORDER = "#8a8a8a"
 BTN_HOVER_BG = "#e5f1fb"
 BTN_PRESSED_BG = "#cce4f7"
-IND_BORDER = "#5f5f5f"   # Linux check box / radio button border
+IND_BORDER = "#5f5f5f"   # Linux check box / radio button border (light mode)
+# Linux check boxes / radio buttons in dark mode
+DARK_IND_BORDER = "#d0d0d0"
+DARK_IND_BG = "#1e1e1e"
+DARK_ACCENT = "#3d9be9"
+DARK_ACCENT_HOVER = "#62b0f0"
+DARK_DISABLED_BORDER = "#6a6a6a"
+DARK_DISABLED_BG = "#2e2e2e"
+DARK_DISABLED_ON = "#3c5a75"
 
 # Nearest freely available fonts to Windows' Segoe UI, in order of preference
 # (the first one installed is used).
@@ -109,13 +121,51 @@ def setup(app):
     apply_stylesheet(app)
 
 
+def _indicator_css(h, light):
+    """Linux check boxes and radio buttons, sized from the text height h."""
+    s = max(16, round(h * 0.95))
+    if light:
+        border, bg, accent, hover = IND_BORDER, "white", ACCENT, ACCENT_HOVER
+        dis_border, dis_bg, dis_on = "#b8b8b8", "#f0f0f0", "#a6c8e8"
+    else:
+        border, bg, accent, hover = DARK_IND_BORDER, DARK_IND_BG, DARK_ACCENT, DARK_ACCENT_HOVER
+        dis_border, dis_bg, dis_on = DARK_DISABLED_BORDER, DARK_DISABLED_BG, DARK_DISABLED_ON
+    return f"""
+QCheckBox, QRadioButton {{ spacing: {max(6, round(h * 0.4))}px; }}
+QCheckBox::indicator, QRadioButton::indicator {{
+    width: {s}px; height: {s}px; border: 2px solid {border}; background: {bg};
+}}
+QCheckBox::indicator {{ border-radius: 3px; }}
+QRadioButton::indicator {{ border-radius: {s // 2 + 2}px; }}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {accent}; }}
+QCheckBox::indicator:checked {{
+    background: {accent}; border-color: {accent}; image: url("{CHECK_SVG}");
+}}
+QCheckBox::indicator:checked:hover {{ background: {hover}; border-color: {hover}; }}
+QRadioButton::indicator:checked {{
+    border-color: {accent};
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+        stop:0 white, stop:0.36 white, stop:0.44 {accent}, stop:1 {accent});
+}}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+    border-color: {dis_border}; background: {dis_bg};
+}}
+QCheckBox::indicator:checked:disabled {{ background: {dis_on}; border-color: {dis_on}; }}
+QRadioButton::indicator:checked:disabled {{
+    border-color: {dis_on};
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+        stop:0 white, stop:0.36 white, stop:0.44 {dis_on}, stop:1 {dis_on});
+}}
+"""
+
+
 def apply_stylesheet(app):
     """(Re)build the style sheet for the current text size; called again when
     the text size changes so check boxes and buttons grow with the text."""
-    if not _is_light(app):
-        app.setStyleSheet("")
-        return
     h = QFontMetrics(app.font()).height()
+    if not _is_light(app):
+        app.setStyleSheet("" if IS_WINDOWS else _indicator_css(h, light=False))
+        return
     pad_v = max(3, round(h * 0.22))
     pad_h = max(10, round(h * 0.7))
     css = f"""
@@ -132,32 +182,5 @@ QPushButton:pressed {{
 QPushButton:disabled {{ background: #f3f3f3; border: 1px solid #c6c6c6; color: #a0a0a0; }}
 """
     if not IS_WINDOWS:
-        s = max(14, round(h * 0.85))
-        css += f"""
-QCheckBox, QRadioButton {{ spacing: {max(5, round(h * 0.35))}px; }}
-QCheckBox::indicator, QRadioButton::indicator {{
-    width: {s}px; height: {s}px; border: 1px solid {IND_BORDER}; background: white;
-}}
-QCheckBox::indicator {{ border-radius: 3px; }}
-QRadioButton::indicator {{ border-radius: {s // 2 + 1}px; }}
-QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {ACCENT}; }}
-QCheckBox::indicator:checked {{
-    background: {ACCENT}; border-color: {ACCENT}; image: url("{CHECK_SVG}");
-}}
-QCheckBox::indicator:checked:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
-QRadioButton::indicator:checked {{
-    border-color: {ACCENT};
-    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
-        stop:0 white, stop:0.36 white, stop:0.44 {ACCENT}, stop:1 {ACCENT});
-}}
-QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
-    border-color: #b8b8b8; background: #f0f0f0;
-}}
-QCheckBox::indicator:checked:disabled {{ background: #a6c8e8; border-color: #a6c8e8; }}
-QRadioButton::indicator:checked:disabled {{
-    border-color: #a6c8e8;
-    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
-        stop:0 white, stop:0.36 white, stop:0.44 #a6c8e8, stop:1 #a6c8e8);
-}}
-"""
+        css += _indicator_css(h, light=True)
     app.setStyleSheet(css)

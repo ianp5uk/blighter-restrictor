@@ -52,7 +52,7 @@ from . import discovery
 
 HELPER = "/usr/sbin/blighter-apply"
 WIN_HELPER = r"C:\ProgramData\BlighterChild\blighter-apply.cmd"
-_SAFE_ARG = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_SAFE_ARG = re.compile(r"^[A-Za-z0-9_:-]{1,32}$")   # ":" for "extend HH:MM" (1.4.0)
 
 
 DISCOVERY_INTERVAL = 60          # seconds between searches for one child's PC
@@ -305,14 +305,38 @@ class Remote:
     def netinfo(self):
         return self._json_t(["netinfo"], 90)
 
+    # ---- login times and warned actions (1.4.0+) --------------------------------------
+    def action(self, action, warn):
+        """logout / restart / shutdown, now (warn 0) or after a 5 or 15 minute warning."""
+        if action not in ("logout", "restart", "shutdown") or warn not in (0, 5, 15):
+            raise ValueError(action)
+        res = self._json_t(["action", action, str(warn)], 120)
+        if warn == 0 and action != "logout":
+            self.close()      # the PC is about to go away
+        return res
+
+    def cancel_action(self):
+        return self._json_t(["action", "cancel"], 90)
+
+    def set_login_times(self, schedule):
+        code, out, err = self.run_helper(["login-set"], json.dumps(schedule), timeout=120)
+        return self._parse(code, out, err)
+
+    def extend(self, until):
+        """Extra time until "HH:MM" today, or "" to end it."""
+        return self._json_t(["extend", until or "end"], 120)
+
     def _json_t(self, args, timeout):
         code, out, err = self.run_helper(args, timeout=timeout)
+        return self._parse(code, out, err)
+
+    def _parse(self, code, out, err):
         try:
             return json.loads(out)
         except ValueError:
             if "usage" in (err + out).lower():
                 raise RemoteError("This PC's Blighter child version is too old for this - "
-                                  "update it to 1.3.0.")
+                                  "update it to 1.4.0.")
             raise RemoteError(f"Unexpected reply from the PC (exit {code}): {(err or out)[:800]}")
 
     def reload(self):

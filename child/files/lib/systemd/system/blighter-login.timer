@@ -1,0 +1,21 @@
+# Blighter Restrictor - login times timer (since 1.4.0).
+# Purpose: start blighter-login.service at the start of every minute and
+# shortly after boot, so login times are enforced even with the parent app
+# closed or offline.
+# Copyright (C) 2026 Ian Packer
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.  It is distributed WITHOUT ANY WARRANTY; see the
+# LICENSE file or <https://www.gnu.org/licenses/> for details.
+[Unit]
+Description=Blighter Restrictor login times, every minute
+
+[Timer]
+OnBootSec=20s
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

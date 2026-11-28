@@ -43,6 +43,34 @@
 #   logout              log the child's account out (unsaved work is lost)
 #   shutdown / restart  switch the PC off / restart it, 5 seconds after
 #                       replying (so the parent app gets the answer)
+#   action logout|restart|shutdown 0|5|15
+#                       the same, straight away (0) or after a warning on the
+#                       child's screen at 5 minutes, or at 15 and 5 minutes
+#                       (since 1.4.0).  "action cancel" cancels a waiting one
+#   login-set           read the login times JSON on stdin (see lockout.py)
+#                       and put it in force
+#   extend HH:MM|end    extra time: the child may log in until HH:MM today
+#   tick                the minute check run by the "Login times" task (as
+#                       SYSTEM): lock / unlock the child's account, warnings,
+#                       warned actions
+#   release             unlock the child's account if Blighter locked it
+#                       (used by blighter-setup.ps1 -Remove)
+# Login times lock the child's account with Windows' own logon hours, set
+# to "none" (Windows then refuses the sign-in with "Your account has time
+# restrictions that keep you from signing in right now"), and unlock it by
+# putting back the logon hours it had before (normally "all").  Only the
+# recorded child account is ever locked - never an administrator, never
+# "blighter".  Warnings appear in the child's session as a small Blighter
+# message box (blighter-warning.ps1, started there by a one-off task;
+# msg.exe is missing on Windows Home).
+#   banner              (since 1.4.0; used by blighter-setup.ps1 and
+#                       Blighter-Details.cmd) rewrite ssh-banner in this
+#                       folder, the one line the SSH server shows the
+#                       "blighter" account before login, e.g.
+#                       "Blighter child 1.4.0 · Jacks-Laptop · Windows 11 Home",
+#                       so the parent app's "Find PCs" can recognise this PC
+#                       without a password (this version, the PC's own name
+#                       read now, the Windows edition)
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -58,6 +86,7 @@ import ipaddress
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -67,8 +96,9 @@ sys.path.insert(0, HERE)
 import domains  # noqa: E402  (shared validation, same file as the parent app)
 import blockpage  # noqa: E402  (neutral error pages, same file as the Ubuntu helper)
 import logtail  # noqa: E402  (incremental log reading, same file as the Ubuntu helper)
+import lockout  # noqa: E402  (login times and warned actions, same file as the Ubuntu helper)
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 PLATFORM = "windows"
 SERVICE = "squidsrv"            # service name used by Diladele's installer
 CHILD_CONF = os.path.join(HERE, "child.conf")
@@ -78,6 +108,12 @@ CONTROL_FILE = os.path.join(STATE_DIR, "control")  # "open parent 2026-11-28 14:
 OFF_FLAG = os.path.join(STATE_DIR, "off")          # switched off completely (blighter-system.ps1 off)
 LEGACY_PAUSED = os.path.join(STATE_DIR, "paused")  # 1.2.x "Pause Blighter Child.cmd" (= off)
 LEGACY_OPEN = os.path.join(STATE_DIR, "open")      # 1.2.x parent app's Pause (now Open all)
+LOGIN_DIR = os.path.join(STATE_DIR, "login")      # login times: schedule, extra time, warned action, lock state
+PREV_HOURS = os.path.join(LOGIN_DIR, "previous-logon-hours")
+WARNING_PS1 = os.path.join(HERE, "blighter-warning.ps1")
+TASK_PATH = "\\Blighter Restrictor\\"
+LOGIN_TASK = TASK_PATH + "Login times"
+ADMIN_USER = "blighter"
 MAX_LOG_LINES = 100000
 NO_WINDOW = 0x08000000          # CREATE_NO_WINDOW
 
@@ -418,6 +454,7 @@ def cmd_get():
         "opera": opera_blocked(),
         "control": read_control(),
         "bypassed": is_bypassed(),
+        "login": engine().describe(),
     })
 
 
@@ -689,6 +726,275 @@ def cmd_power(action):
     out({"ok": True, "message": ("The PC is shutting down." if action == "shutdown" else "The PC is restarting.")})
 
 
+# ---- login times and warned actions (since 1.4.0) ---------------------------------
+LG_INCLUDE_INDIRECT = 1
+MAX_PREFERRED_LENGTH = 0xFFFFFFFF
+
+
+def _net_user_name(user):
+    """The local account name for the Net* functions ("PC\\name" -> "name")."""
+    return user.split("\\")[-1]
+
+
+def _admins_group_name():
+    """The local Administrators group's name in this PC's language."""
+    from ctypes import wintypes
+    adv = ctypes.windll.advapi32
+    sid = ctypes.c_void_p()
+    if not adv.ConvertStringSidToSidW("S-1-5-32-544", ctypes.byref(sid)):
+        return None
+    try:
+        name, dom = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
+        n, d, use = wintypes.DWORD(256), wintypes.DWORD(256), wintypes.DWORD()
+        if not adv.LookupAccountSidW(None, sid, name, ctypes.byref(n), dom, ctypes.byref(d), ctypes.byref(use)):
+            return None
+        return name.value
+    finally:
+        ctypes.windll.kernel32.LocalFree(sid)
+
+
+def _is_admin(user):
+    """True / False, or None if it cannot be checked (directly or through a group)."""
+    from ctypes import wintypes
+    net = ctypes.windll.netapi32
+    admins = _admins_group_name()
+    if not admins:
+        return None
+    buf = ctypes.c_void_p()
+    read_n, total = wintypes.DWORD(), wintypes.DWORD()
+    rc = net.NetUserGetLocalGroups(None, _net_user_name(user), 0, LG_INCLUDE_INDIRECT, ctypes.byref(buf),
+                                   ctypes.c_uint32(MAX_PREFERRED_LENGTH), ctypes.byref(read_n), ctypes.byref(total))
+    if rc != 0:
+        return None
+    try:
+        names = ctypes.cast(buf, ctypes.POINTER(wintypes.LPWSTR))
+        groups = [names[i] for i in range(read_n.value)]
+    finally:
+        net.NetApiBufferFree(buf)
+    return admins.lower() in (g.lower() for g in groups if g)
+
+
+class _UserInfo1020(ctypes.Structure):
+    _fields_ = [("units_per_week", ctypes.c_uint32), ("logon_hours", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+def _logon_hours(user):
+    """The account's 21-byte logon hours (bytes), b"" for "all", or None if not found."""
+    net = ctypes.windll.netapi32
+    buf = ctypes.POINTER(_UserInfo1020)()
+    if net.NetUserGetInfo(None, _net_user_name(user), 1020, ctypes.byref(buf)) != 0:
+        return None
+    try:
+        info = buf.contents
+        if not info.logon_hours:
+            return b""
+        hours = bytes(info.logon_hours[i] for i in range(21))
+        return b"" if hours == b"\xff" * 21 else hours
+    finally:
+        net.NetApiBufferFree(buf)
+
+
+def _set_logon_hours(user, hours):
+    """hours: 21 bytes (b"\\x00" * 21 = never)."""
+    net = ctypes.windll.netapi32
+    arr = (ctypes.c_ubyte * 21)(*hours)
+    info = _UserInfo1020(168, ctypes.cast(arr, ctypes.POINTER(ctypes.c_ubyte)))
+    err = ctypes.c_uint32()
+    rc = net.NetUserSetInfo(None, _net_user_name(user), 1020, ctypes.byref(info), ctypes.byref(err))
+    return rc == 0, ("" if rc == 0 else f"Windows error {rc}")
+
+
+def _lockable(user):
+    return bool(user) and _net_user_name(user).lower() not in (ADMIN_USER, "administrator")
+
+
+def _child_sessions():
+    conf = child_conf()
+    user, want_sid = conf.get("CHILD_USER", ""), conf.get("CHILD_SID", "")
+    if not user:
+        return []
+    try:
+        return [(sid, name) for sid, name in _sessions()
+                if name.split("\\")[-1].lower() == user.lower()
+                or (want_sid and _account_sid(name) == want_sid)]
+    except OSError:
+        return []
+
+
+def _ps_quote(text):
+    return "'" + text.replace("'", "''") + "'"
+
+
+class WindowsPC:
+    state_dir = LOGIN_DIR
+
+    def child_user(self):
+        return child_conf().get("CHILD_USER", "")
+
+    def child_is_admin(self):
+        user = self.child_user()
+        if not _lockable(user):
+            return None
+        try:
+            return _is_admin(user)
+        except (OSError, AttributeError, ctypes.ArgumentError):
+            return None
+
+    def set_locked(self, locked):
+        user = self.child_user()
+        if not _lockable(user):
+            return False, f"'{user}' is not an account Blighter may lock."
+        current = _logon_hours(user)
+        if current is None:
+            return False, f"No account '{user}' on this PC."
+        never = b"\x00" * 21
+        if locked:
+            if current == never:
+                return True, "already locked"
+            os.makedirs(LOGIN_DIR, exist_ok=True)
+            with open(PREV_HOURS, "w") as f:
+                f.write(current.hex() + "\n")
+            return _set_logon_hours(user, never)
+        if current != never:
+            return True, "not locked"
+        try:
+            prev = bytes.fromhex(read(PREV_HOURS).strip())
+        except ValueError:
+            prev = b""
+        if len(prev) != 21 or prev == never:
+            prev = b"\xff" * 21
+        return _set_logon_hours(user, prev)
+
+    def child_logged_in(self):
+        return bool(_child_sessions())
+
+    def logout(self):
+        ids = [i for i, _ in _child_sessions()]
+        failed = [i for i in ids if not ctypes.windll.wtsapi32.WTSLogoffSession(None, i, False)]
+        return not failed, ("" if not failed else f"Windows error {ctypes.GetLastError()}")
+
+    def power(self, action):
+        code, text = run(["shutdown.exe", "/s" if action == "shutdown" else "/r", "/t", "5", "/d", "p:0:0",
+                          "/c", "Blighter Restrictor: login time is over" if action == "shutdown"
+                          else "Blighter Restrictor: requested by the parent app"])
+        return code == 0, text
+
+    def notify(self, title, text):
+        """A message box in each of the child's sessions, started there by a
+        one-off scheduled task (works on Windows Home too; best effort)."""
+        import base64
+        sessions = _child_sessions()
+        if not sessions or not os.path.exists(WARNING_PS1):
+            return
+        enc = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        ps = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell",
+                          "v1.0", "powershell.exe")
+        arg = f'-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{WARNING_PS1}" -Text {enc}'
+        name = f"Warning {int(time.time())}"
+        lines = [
+            "$ErrorActionPreference = 'Stop'",
+            f"$tp = {_ps_quote(TASK_PATH)}",
+            # Old warnings that are no longer showing are tidied away.
+            "Get-ScheduledTask -TaskPath $tp -ErrorAction SilentlyContinue | "
+            "Where-Object { $_.TaskName -like 'Warning *' -and $_.State -ne 'Running' } | "
+            "Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue",
+            f"$a = New-ScheduledTaskAction -Execute {_ps_quote(ps)} -Argument {_ps_quote(arg)}",
+            "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+            "-ExecutionTimeLimit (New-TimeSpan -Minutes 30)",
+        ]
+        for i, (_, account) in enumerate(sorted(set(sessions))):
+            n = f"{name} {i}"
+            lines += [
+                f"$p = New-ScheduledTaskPrincipal -UserId {_ps_quote(account)} -LogonType Interactive -RunLevel Limited",
+                f"Register-ScheduledTask -TaskName {_ps_quote(n)} -TaskPath $tp -Action $a -Principal $p "
+                "-Settings $s -Description 'Blighter Restrictor: a warning for the child' -Force | Out-Null",
+                f"Start-ScheduledTask -TaskPath $tp -TaskName {_ps_quote(n)}",
+            ]
+        script = os.path.join(LOGIN_DIR, "show-warning.ps1")
+        os.makedirs(LOGIN_DIR, exist_ok=True)
+        with open(script, "w", encoding="utf-8-sig") as f:
+            f.write("\r\n".join(lines) + "\r\n")
+        code, out_text = run([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                              "-File", script], timeout=60)
+        if code != 0:
+            self.log("warning not shown: " + out_text[-300:])
+
+    def bypassed(self):
+        return is_bypassed()
+
+    def log(self, text):
+        try:
+            os.makedirs(LOGIN_DIR, exist_ok=True)
+            path = os.path.join(LOGIN_DIR, "log.txt")
+            lines = read(path).splitlines()[-199:]
+            lines.append(time.strftime("%Y-%m-%d %H:%M:%S ") + text)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except OSError:
+            pass
+
+
+def engine():
+    return lockout.Engine(WindowsPC())
+
+
+def kick_tick():
+    """Run the minute check now (in the background) so a change takes effect at once."""
+    run(["schtasks.exe", "/Run", "/TN", LOGIN_TASK], timeout=30)
+
+
+def cmd_login_set():
+    try:
+        data = json.loads(sys.stdin.read(200_000))
+    except ValueError:
+        out({"ok": False, "message": "Input was not valid JSON"}, 1)
+    ok, msg = engine().set_schedule(data)
+    if ok:
+        kick_tick()
+        time.sleep(2)
+    out({"ok": ok, "message": msg, "login": engine().describe()}, 0 if ok else 1)
+
+
+def cmd_extend(arg):
+    ok, msg = engine().set_extension("" if arg == "end" else arg)
+    if ok:
+        kick_tick()
+        time.sleep(2)
+    out({"ok": ok, "message": msg, "login": engine().describe()}, 0 if ok else 1)
+
+
+def cmd_action(action, warn):
+    eng = engine()
+    if action == "cancel":
+        ok, msg = eng.cancel_pending()
+    elif warn == 0:
+        if eng.pending():
+            eng.cancel_pending()
+        if action == "logout":
+            cmd_logout()
+        cmd_power(action)
+    else:
+        ok, msg = eng.set_pending(action, warn)
+        kick_tick()
+    out({"ok": ok, "message": msg, "login": eng.describe()}, 0 if ok else 1)
+
+
+def cmd_tick():
+    if not os.path.exists(CHILD_CONF):
+        return
+    engine().tick()
+
+
+def cmd_release():
+    ok, msg = engine().release()
+    for name in (lockout.PENDING_FILE, lockout.EXTENSION_FILE):
+        try:
+            os.remove(os.path.join(LOGIN_DIR, name))
+        except FileNotFoundError:
+            pass
+    out({"ok": ok, "message": msg}, 0 if ok else 1)
+
+
 def cmd_reload():
     # Rewrite rules.conf too, so a PC set up by an older version gets the
     # current Squid settings (e.g. the neutral error pages).
@@ -769,8 +1075,46 @@ def cmd_init():
     print("Blighter rule files ready in " + BASE)
 
 
+# ---- SSH pre-login banner for the parent app's "Find PCs" (since 1.4.0) --------
+BANNER_FILE = os.path.join(HERE, "ssh-banner")
+
+
+def os_name():
+    """'Windows 11 Home' (Windows 11 still calls itself 'Windows 10' in ProductName)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") as k:
+            name = str(winreg.QueryValueEx(k, "ProductName")[0])
+            build = int(winreg.QueryValueEx(k, "CurrentBuildNumber")[0])
+    except (OSError, ValueError, ImportError):
+        return "Windows"
+    name = name.replace("Microsoft ", "")
+    if build >= 22000:
+        name = name.replace("Windows 10", "Windows 11")
+    return name
+
+
+def _banner_part(text):
+    """One printable part of the banner (no separator dots, at most 64 characters)."""
+    return "".join(c for c in text if c.isprintable() and c != "\u00b7").strip()[:64]
+
+
+def banner_text():
+    host = _banner_part(socket.gethostname().split(".")[0]) or "PC"
+    system = _banner_part(os_name()) or "Windows"
+    return f"Blighter child {VERSION} \u00b7 {host} \u00b7 {system}\n"
+
+
+def cmd_banner():
+    text = banner_text()
+    if read(BANNER_FILE) != text:
+        write(BANNER_FILE, text)
+    out({"ok": True, "message": "SSH banner: " + text.strip()})
+
+
 USAGE = ("usage: blighter-apply get|status|set|reload|log N [rotated]|logstart N [rotated]|"
-         "lognext INO OFFSET|init|netinfo|filtered|block|open [local]|logout|shutdown|restart")
+         "lognext INO OFFSET|init|netinfo|filtered|block|open [local]|logout|shutdown|restart|"
+         "action logout|restart|shutdown 0|5|15|action cancel|login-set|extend HH:MM|end|tick|release|banner")
 
 
 def main():
@@ -808,6 +1152,20 @@ def main():
         cmd_logout()
     elif cmd in ("shutdown", "restart") and not rest:
         cmd_power(cmd)
+    elif cmd == "action" and rest == ["cancel"]:
+        cmd_action("cancel", 0)
+    elif cmd == "action" and len(rest) == 2 and rest[0] in lockout.ACTIONS and rest[1] in ("0", "5", "15"):
+        cmd_action(rest[0], int(rest[1]))
+    elif cmd == "login-set" and not rest:
+        cmd_login_set()
+    elif cmd == "extend" and len(rest) == 1 and (rest[0] == "end" or lockout.parse_hhmm(rest[0]) is not None):
+        cmd_extend(rest[0])
+    elif cmd == "tick" and not rest:
+        cmd_tick()
+    elif cmd == "release" and not rest:
+        cmd_release()
+    elif cmd == "banner" and not rest:
+        cmd_banner()
     else:
         sys.exit(USAGE)
 

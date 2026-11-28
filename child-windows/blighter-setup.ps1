@@ -24,7 +24,12 @@
 #      3128) and desktop shortcuts are removed, and the folder is locked
 #   5. creates the hidden "blighter" administrator account (password login
 #      over SSH) that the parent app uses
-#   6. installs and starts Windows' own OpenSSH Server
+#   6. installs and starts Windows' own OpenSSH Server, and (since 1.4.0)
+#      makes it show the "blighter" account a one-line banner before login -
+#      "Blighter child <version>", this PC's name and the Windows edition,
+#      separated by middle dots (ssh-banner, lines at the end of
+#      sshd_config) - so the parent app's "Find PCs" can list this PC
+#      without a password
 #   7. replaces squid.conf with the Blighter one (old file backed up)
 #   8. turns on the whole-PC firewall, the proxy settings and the
 #      self-repair task (blighter-system.ps1 enable)
@@ -42,6 +47,7 @@
 # proxy and browser settings, network types, and - if setup added them -
 # deletes the blighter account and stops and uninstalls OpenSSH Server and
 # Squid (it asks first; the defaults are "yes"), then deletes its own folder.
+# Blighter's banner lines are always taken out of sshd_config.
 #
 # Usage (PowerShell as administrator):
 #   blighter-setup.ps1 [-Child <username>] [-NoVoice] [-DnsServers "1.1.1.1 8.8.8.8"]
@@ -92,7 +98,7 @@ $ErrorActionPreference = "Stop"
 # Progress bars are hidden (they flash on and off and look like a fault);
 # slow steps print their own "still working" lines instead.
 $ProgressPreference    = "SilentlyContinue"
-$Version   = "1.3.0"
+$Version   = "1.4.0"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -257,6 +263,54 @@ if ($Query) {
     exit 0
 }
 
+# ------------------------------------------------------------- SSH banner ---
+# Since 1.4.0 the SSH server shows the "blighter" account a one-line banner
+# before login (ssh-banner in $Dest, written by blighter-apply banner), so
+# the parent app's "Find PCs" can list this PC without a password.  Windows
+# has no sshd_config.d folder, so the lines go at the end of sshd_config,
+# between two marker comments that removal looks for.  sshd -t checks the
+# result; if sshd rejects it the previous file is put back.
+$SshdConfig  = Join-Path $env:ProgramData "ssh\sshd_config"
+$BannerFile  = Join-Path $Dest "ssh-banner"
+$BannerStart = "# Blighter Restrictor (start): pre-login banner for the parent app's Find PCs"
+$BannerEnd   = "# Blighter Restrictor (end)"
+
+function Test-SshdConfig {
+    $exe = Join-Path $env:SystemRoot "System32\OpenSSH\sshd.exe"
+    if (-not (Test-Path $exe)) {
+        $c = Get-Command sshd.exe -ErrorAction SilentlyContinue
+        if (-not $c) { return $true }
+        $exe = $c.Source
+    }
+    # Windows PowerShell 5.1 turns a program's error output into a fatal error under "Stop".
+    $ErrorActionPreference = "Continue"
+    & $exe -t 2>&1 | Select-Object -Last 5 | ForEach-Object { Write-Host "  sshd: $_" }
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Set-SshBanner([bool]$on) {
+    # Adds ($on) or removes Blighter's lines.  $true if sshd_config was changed
+    # (sshd must then be restarted to use it).
+    if (-not (Test-Path $SshdConfig)) { return $false }
+    $old = [IO.File]::ReadAllText($SshdConfig)
+    $pattern = "(?ms)^" + [regex]::Escape($BannerStart) + ".*?^" + [regex]::Escape($BannerEnd) + "[^\r\n]*(\r?\n)?"
+    $new = [regex]::Replace($old, $pattern, "")
+    if ($on) {
+        $nl = if ($old -match "`r`n") { "`r`n" } else { "`n" }
+        if ($new.Length -and -not $new.EndsWith("`n")) { $new += $nl }
+        $path = $BannerFile -replace '\\', '/'
+        $new += (@($BannerStart, "Match User $Admin", "    Banner `"$path`"", $BannerEnd, "") -join $nl)
+    }
+    if ($new -eq $old) { return $false }
+    [IO.File]::WriteAllText($SshdConfig, $new)
+    if (-not (Test-SshdConfig)) {
+        [IO.File]::WriteAllText($SshdConfig, $old)
+        Warn "sshd rejected the banner setting - sshd_config was put back as it was."
+        return $false
+    }
+    return $true
+}
+
 # ----------------------------------------------------------------- removal ---
 function Get-SquidProductCodes {
     foreach ($root in "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
@@ -276,6 +330,18 @@ if ($Remove) {
         Write-Host "Putting back the settings saved on $($pre.captured_at)."
     } else {
         Warn "No saved 'before' state was found - Windows defaults will be used instead."
+    }
+
+    Say "Login times"
+    # Unlock the child's account first if Blighter's login times locked it.
+    $helper = Join-Path $Dest "blighter-apply.cmd"
+    if (Test-Path $helper) {
+        Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -TaskName "Login times" -ErrorAction SilentlyContinue |
+            Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
+        $ErrorActionPreference = "Continue"
+        $r = & $helper release 2>&1
+        $ErrorActionPreference = "Stop"
+        Write-Host "  $r"
     }
 
     Say "Firewall, proxy and browser settings"
@@ -300,6 +366,12 @@ if ($Remove) {
     } else { Write-Host "  No network types were changed by setup." }
 
     Say "SSH server"
+    # The "Find PCs" banner lines in sshd_config (since 1.4.0), whoever installed OpenSSH.
+    if (Set-SshBanner $false) {
+        Write-Host "Blighter's banner lines removed from sshd_config."
+        if ((Get-Service sshd -ErrorAction SilentlyContinue).Status -eq "Running") { Restart-Service sshd -ErrorAction SilentlyContinue }
+    }
+    Remove-Item $BannerFile -Force -ErrorAction SilentlyContinue
     $sshd = Get-Service sshd -ErrorAction SilentlyContinue
     if ($sshd) {
         if ($pre -and $pre.sshd_exists) {
@@ -486,7 +558,8 @@ if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest | Out-Nul
 Lock-Folder $Dest
 if ((Resolve-Path $Src).Path.TrimEnd('\') -ne (Resolve-Path $Dest).Path.TrimEnd('\')) {
     foreach ($item in "blighter-apply.py", "blighter-apply.cmd", "blighter-system.ps1", "blighter-setup.ps1",
-                      "domains.py", "blockpage.py", "logtail.py", "squid.conf", "python", "LICENSE.txt",
+                      "domains.py", "blockpage.py", "logtail.py", "lockout.py", "blighter-warning.ps1",
+                      "squid.conf", "python", "LICENSE.txt",
                       "Remove Blighter Child.cmd", "Blighter Open All.cmd", "Blighter Filtered.cmd",
                       "blighter-details.ps1", "Blighter-Details.cmd") {
         $from = Join-Path $Src $item
@@ -794,6 +867,14 @@ Start-Service sshd
 $cfg = Join-Path $env:ProgramData "ssh\sshd_config"
 if ((Test-Path $cfg) -and (Select-String -Path $cfg -Pattern '^\s*PasswordAuthentication\s+no' -Quiet)) {
     Warn "$cfg has 'PasswordAuthentication no' - the parent app needs password login.  Edit it and restart sshd."
+}
+# The banner the parent app's "Find PCs" reads (see Set-SshBanner).
+& (Join-Path $Dest "blighter-apply.cmd") banner | Out-Null
+if ($LASTEXITCODE -eq 0 -and (Test-Path $BannerFile)) {
+    if (Set-SshBanner $true) { Restart-Service sshd }
+    Write-Host ("SSH banner for the parent app's ""Find PCs"": " + (Get-Content $BannerFile -Raw).Trim())
+} else {
+    Warn "The SSH banner could not be written - ""Find PCs"" in the parent app will not list this PC (adding it by address still works)."
 }
 Write-Host "SSH server running."
 

@@ -5,7 +5,8 @@
 # Purpose: assemble and build
 #   dist/blighter-restrictor_<ver>_all.deb  (parent app with the GUI)
 #   dist/blighter-child_<ver>_all.deb       (installed on each child's PC)
-# The shared common/domains.py is copied into both so their checks match.
+# The shared common/domains.py and common/lockout.py are copied into both so
+# their checks match.
 # Each gets the GPL copyright file and THIRD-PARTY-NOTICES.txt in
 # /usr/share/doc/<package>/.
 # Usage: ./build-debs.sh      (needs dpkg-deb, run on Ubuntu/Debian)
@@ -36,6 +37,7 @@ sed -i "s/^Version: .*/Version: $VER/" "$C/DEBIAN/control"
 install -D -m 644 common/domains.py "$C/usr/lib/blighter-child/domains.py"
 install -D -m 644 common/blockpage.py "$C/usr/lib/blighter-child/blockpage.py"
 install -D -m 644 common/logtail.py "$C/usr/lib/blighter-child/logtail.py"
+install -D -m 644 common/lockout.py "$C/usr/lib/blighter-child/lockout.py"
 chmod 755 "$C/usr/sbin/"*
 mkdir -p "$C/usr/share/doc/blighter-child" && grep -v "^#" packaging-copyright > "$C/usr/share/doc/blighter-child/copyright"
 install -m 644 THIRD-PARTY-NOTICES.txt "$C/usr/share/doc/blighter-child/THIRD-PARTY-NOTICES.txt"
@@ -46,6 +48,7 @@ P=$BUILD/blighter-restrictor
 mkdir -p "$P/usr/lib/blighter-restrictor"
 cp -a parent/blighter_parent "$P/usr/lib/blighter-restrictor/"
 install -m 644 common/domains.py "$P/usr/lib/blighter-restrictor/blighter_parent/domains.py"
+install -m 644 common/lockout.py "$P/usr/lib/blighter-restrictor/blighter_parent/lockout.py"
 install -D -m 755 parent/packaging/blighter-restrictor "$P/usr/bin/blighter-restrictor"
 install -D -m 644 parent/packaging/blighter-restrictor.desktop \
     "$P/usr/share/applications/blighter-restrictor.desktop"

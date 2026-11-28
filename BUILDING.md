@@ -57,6 +57,8 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `common/domains.py` | Domain validation and the Discord switch rules, shared by the app and the PC helpers |
 | `common/blockpage.py` | The neutral error page and Squid header settings, shared by both PC helpers |
 | `common/logtail.py` | Reads the activity log a piece at a time (only new lines), shared by both PC helpers |
+| `common/lockout.py` | Login times, warnings and warned actions (since 1.4.0), shared by the app and both PC helpers |
+| `tests/` | Login times tests (`python3 -m unittest discover -s tests -p "test_lockout.py"`) and the Find PCs test |
 | `parent/blighter_parent/` | The GUI app (Qt / PySide6, Paramiko SSH, keyring) |
 | `parent/packaging/` | Ubuntu launcher, menu entry and package control file |
 | `child/files/usr/sbin/blighter-setup` | One-time PC setup / removal |
@@ -65,6 +67,7 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `child/files/usr/share/blighter-child/squid.conf` | Managed Squid configuration |
 | `child-windows/blighter-setup.ps1` | Windows PC setup / removal |
 | `child-windows/blighter-system.ps1` | Windows whole-PC firewall, proxy policies, self-repair task |
+| `child-windows/blighter-warning.ps1` | Windows: the warning box shown in the child's session (since 1.4.0) |
 | `child-windows/blighter-apply.py` / `.cmd` | Windows helper the app runs over SSH (same commands as Ubuntu's) |
 | `child-windows/squid.conf` | Managed Squid configuration for Squid for Windows |
 | `child-windows/blighter-details.ps1` | Windows: connection details, repair and password change for a parent |

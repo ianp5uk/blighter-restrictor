@@ -5,7 +5,8 @@
 #                    BlighterRestrictor-Setup-<ver>.exe installer with Inno
 #                    Setup, check the exe starts (--self-test), keep the
 #                    installer as a downloadable artifact
-#   child-package  - build blighter-child-windows-<ver>.zip (on Linux)
+#   child-package  - run the login times tests (tests/test_lockout.py) and
+#                    build blighter-child-windows-<ver>.zip (on Linux)
 #   child-setup    - build BlighterChild-Setup-<ver>.exe (Inno Setup) from it
 #   child-test     - first check that a setup stopped part-way (-TestFailAt 7)
 #                    undoes itself; then install another program's Squid and
@@ -17,11 +18,14 @@
 #                    the Opera switch, the SSH rule's addresses, the Brave
 #                    and Vivaldi proxy policies,
 #                    the parent app's SSH connection code against Windows'
-#                    OpenSSH, the self-repair task, the Controls switch, a re-run
+#                    OpenSSH, the "Find PCs" banner (read as the parent app does,
+#                    only for the blighter account; removed again by the
+#                    uninstall), the self-repair task, the Controls switch, a re-run
 #                    that replaces Blighter's own Squid (lists and log kept;
 #                    "Squid updated" note when the file differs), then
 #                    removal through the uninstaller - checking the PC's settings afterwards
-#                    match those recorded before setup.
+#                    match those recorded before setup, and the child's account
+#                    unlocked again.
 #
 # Copyright (C) 2026 Ways Property
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -72,6 +76,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Login times rules (common/lockout.py)
+        run: python3 -m unittest discover -s tests -p "test_lockout.py" -v
       - name: Build Windows child package
         run: ./build-windows-child.sh
       - uses: actions/upload-artifact@v4
@@ -402,6 +408,38 @@ jobs:
           "@ | Set-Content ci_ssh.py
           python ci_ssh.py $env:BLIGHTER_ADMIN_PASSWORD
           if ($LASTEXITCODE) { throw "SSH test failed" }
+      - name: Find PCs - the child's SSH banner (1.4.0)
+        shell: pwsh
+        run: |
+          # The parent app's "Find PCs" reads a one-line banner that the SSH
+          # server shows the blighter account before login (no password sent).
+          $cfg = Get-Content C:\ProgramData\ssh\sshd_config -Raw
+          if ($cfg -notmatch "Blighter Restrictor \(start\)") { throw "banner lines missing in sshd_config" }
+          if (-not (Test-Path C:\ProgramData\BlighterChild\ssh-banner)) { throw "ssh-banner missing" }
+          Write-Host "ssh-banner: $(Get-Content C:\ProgramData\BlighterChild\ssh-banner -Raw -Encoding utf8)"
+          @"
+          import sys
+          sys.path.insert(0, 'parent')
+          from blighter_parent import discovery
+          key_file = open(r'C:\ProgramData\ssh\ssh_host_ed25519_key.pub').read().split()
+          found = discovery.find_pcs([], 22, hosts=['127.0.0.1'])
+          print('found:', found)
+          assert len(found) == 1, 'the child PC was not listed'
+          pc = found[0]
+          assert pc['name'].lower().startswith(sys.argv[1].lower()), 'name %r, PC is %r' % (pc['name'], sys.argv[1])
+          assert pc['os'].startswith('Windows'), pc['os']
+          assert pc['version'] == sys.argv[2], 'version %r, helper is %r' % (pc['version'], sys.argv[2])
+          assert pc['host_key_text'].split() == key_file[:2], 'host key differs: %r' % pc['host_key_text']
+          again = discovery.find_pcs([pc['host_key_text']], 22, hosts=['127.0.0.1'])
+          assert again and again[0]['known'], 'not marked already added'
+          discovery.ADMIN = 'runneradmin'
+          key, banner = discovery.read_banner('127.0.0.1', 22)
+          assert not banner.startswith('Blighter child'), 'banner shown to another account: %r' % banner
+          print('OK: banner readable by the parent app, only for the blighter account')
+          "@ | Set-Content ci_find.py
+          $ver = (Select-String C:\ProgramData\BlighterChild\blighter-apply.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          python ci_find.py $env:COMPUTERNAME $ver
+          if ($LASTEXITCODE) { throw "Find PCs test failed" }
       - name: Self-repair task
         shell: pwsh
         run: |
@@ -511,6 +549,97 @@ jobs:
           $st = & $h status | ConvertFrom-Json
           if (-not $st.firewall_active) { throw "firewall not active after repair" }
           Write-Host "OK: repair keeps the SSH identity and the firewall"
+      - name: Login times, warned actions (1.4.0)
+        shell: pwsh
+        run: |
+          # As the parent app's Controls tab does it: login-set / extend /
+          # action through the helper; the "Login times" task (SYSTEM, every
+          # minute) does the locking.  A locked account must be refused by
+          # Windows itself (LogonUser: ERROR_INVALID_LOGON_HOURS = 1328).
+          $h = "C:\ProgramData\BlighterChild\blighter-apply.cmd"
+          $state = "C:\ProgramData\BlighterChild\state\login"
+          $pw = "Kid-Login-$(Get-Random)-Aa1!"
+          net user testkid $pw | Out-Null
+          Add-Type -TypeDefinition @"
+          using System; using System.Runtime.InteropServices;
+          public class BLU {
+            [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+            public static extern bool LogonUser(string u, string d, string p, int type, int prov, out IntPtr tok);
+            [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+          }
+          "@
+          function TryLogon {
+            foreach ($type in 2, 3) {
+              $tok = [IntPtr]::Zero
+              $ok = [BLU]::LogonUser("testkid", ".", $pw, $type, 0, [ref]$tok)
+              $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+              if ($ok) { [BLU]::CloseHandle($tok) | Out-Null; return 0 }
+              if ($err -ne 1385) { return $err }      # 1385 = that logon type not granted here; try the next
+            }
+            return $err
+          }
+          function WaitLocked([bool]$want) {
+            for ($i = 0; $i -lt 30; $i++) {
+              $ls = Get-Content (Join-Path $state "lockstate.json") -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+              if ($ls -and [bool]$ls.locked -eq $want) { return }
+              Start-Sleep -Seconds 3
+            }
+            Get-Content (Join-Path $state "log.txt") -ErrorAction SilentlyContinue
+            throw "lock state did not become $want"
+          }
+          $t = Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -TaskName "Login times"
+          if ($t.Principal.UserId -ne "SYSTEM") { throw "Login times task runs as $($t.Principal.UserId)" }
+          Write-Host "Login times task: $($t.State), every $($t.Triggers[0].Repetition.Interval)"
+          if ((TryLogon) -ne 0) { throw "testkid cannot log on even before any lock ($(TryLogon))" }
+          $g = & $h get | ConvertFrom-Json
+          if (-not $g.login -or $g.login.limited) { throw "get: no login info, or limited already" }
+          if ($g.login.child_is_admin -ne $false) { throw "child_is_admin should be false, got $($g.login.child_is_admin)" }
+          # Locked all week.
+          $r = '{"enabled":true,"days":[[],[],[],[],[],[],[]],"warn":15,"at_lock":"logout"}' | & $h login-set | ConvertFrom-Json
+          if (-not $r.ok) { throw "login-set failed: $($r.message)" }
+          WaitLocked $true
+          $e = TryLogon
+          if ($e -ne 1328) { throw "locked account: expected error 1328 (logon hours), got $e" }
+          Write-Host "OK: locked - Windows refuses testkid (error 1328)"
+          # Extra time unlocks until it ends.
+          $until = (Get-Date).AddMinutes(25)
+          if ($until.Date -eq (Get-Date).Date) {
+            $hhmm = "{0:HH}:{1:00}" -f $until, ([math]::Floor($until.Minute / 5) * 5)
+            $r = & $h extend $hhmm | ConvertFrom-Json
+            if (-not $r.ok -or -not $r.login.allowed) { throw "extend failed: $($r.message)" }
+            WaitLocked $false
+            if ((TryLogon) -ne 0) { throw "extra time: testkid still refused" }
+            $r = & $h extend end | ConvertFrom-Json
+            WaitLocked $true
+            Write-Host "OK: extra time until $hhmm unlocked, ending it locked again"
+          } else { Write-Host "(extra time check skipped near midnight)" }
+          # Switched off: unlocked, logon hours back to all.
+          $r = '{"enabled":false,"days":[[],[],[],[],[],[],[]],"warn":15,"at_lock":"logout"}' | & $h login-set | ConvertFrom-Json
+          WaitLocked $false
+          if ((TryLogon) -ne 0) { throw "login times off: testkid still refused" }
+          Write-Host "OK: login times off - unlocked"
+          # An administrator child is refused.
+          Add-LocalGroupMember -SID S-1-5-32-544 -Member testkid
+          $r = '{"enabled":true,"days":[[],[],[],[],[],[],[]],"warn":15,"at_lock":"logout"}' | & $h login-set | ConvertFrom-Json
+          Remove-LocalGroupMember -SID S-1-5-32-544 -Member testkid
+          if ($r.ok) { throw "login times accepted for an administrator child" }
+          Write-Host "OK: refused for an administrator: $($r.message)"
+          # Warned actions (never carried out here): waiting, then cancelled.
+          $r = & $h action logout 5 | ConvertFrom-Json
+          if (-not $r.ok -or $r.login.pending) { throw "logout with nobody logged in should do nothing: $($r.message)" }
+          $r = & $h action restart 15 | ConvertFrom-Json
+          if (-not $r.ok -or $r.login.pending.action -ne "restart") { throw "restart 15 not waiting: $($r.message)" }
+          $r = & $h action cancel | ConvertFrom-Json
+          if (-not $r.ok -or $r.login.pending) { throw "cancel failed: $($r.message)" }
+          Write-Host "OK: warned restart waited and was cancelled"
+          # The warning box script parses (it can't be shown without a desktop session here).
+          $null = [System.Management.Automation.Language.Parser]::ParseFile("C:\ProgramData\BlighterChild\blighter-warning.ps1", [ref]$null, [ref]$errs)
+          if ($errs) { throw "blighter-warning.ps1: $errs" }
+          # Leave it locked: the uninstaller must unlock it (checked after removal).
+          $r = '{"enabled":true,"days":[[],[],[],[],[],[],[]],"warn":0,"at_lock":"logout"}' | & $h login-set | ConvertFrom-Json
+          WaitLocked $true
+          $pw | Set-Content "$env:RUNNER_TEMP\kidpw.txt"
+          Write-Host "OK: login times"
       - name: Re-run replaces Blighter's own Squid and keeps the lists
         shell: pwsh
         run: |
@@ -560,3 +689,31 @@ jobs:
           if (-not (Test-Path C:\ProgramData\Squid-settings-before-Blighter)) { throw "saved Squid settings not kept" }
           Write-Host "OK: other program's Squid configuration put back"
           & "$env:RUNNER_TEMP\compare.ps1"
+      - name: Login times - account unlocked after uninstall (1.4.0)
+        shell: pwsh
+        run: |
+          $pw = (Get-Content "$env:RUNNER_TEMP\kidpw.txt").Trim()
+          Add-Type -TypeDefinition @"
+          using System; using System.Runtime.InteropServices;
+          public class BLU2 {
+            [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+            public static extern bool LogonUser(string u, string d, string p, int type, int prov, out IntPtr tok);
+          }
+          "@
+          $ok = $false
+          foreach ($type in 2, 3) {
+            $tok = [IntPtr]::Zero
+            if ([BLU2]::LogonUser("testkid", ".", $pw, $type, 0, [ref]$tok)) { $ok = $true; break }
+            $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            if ($err -ne 1385) { break }
+          }
+          if (-not $ok) { throw "testkid still cannot log on after uninstall (error $err)" }
+          if (Get-ScheduledTask -TaskPath "\Blighter Restrictor\" -ErrorAction SilentlyContinue) { throw "Blighter tasks left" }
+          Write-Host "OK: uninstall unlocked the child's account"
+      - name: Find PCs - banner removed after uninstall (1.4.0)
+        shell: pwsh
+        run: |
+          $cfg = "C:\ProgramData\ssh\sshd_config"
+          if ((Test-Path $cfg) -and (Select-String $cfg -Pattern "Blighter Restrictor" -Quiet)) { throw "Blighter's banner lines left in sshd_config" }
+          if (Test-Path C:\ProgramData\BlighterChild\ssh-banner) { throw "ssh-banner left" }
+          Write-Host "OK: banner and its sshd_config lines removed"

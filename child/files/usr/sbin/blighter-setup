@@ -7,7 +7,12 @@
 #   1. records which user account is the child's (/etc/blighter/child.conf)
 #   2. creates the "blighter" admin account (password login over SSH) that
 #      may run ONLY /usr/sbin/blighter-apply as root
-#   3. makes sure SSH password login works for that account and SSH is on
+#   3. makes sure SSH password login works for that account and SSH is on,
+#      and (since 1.4.0) that the SSH server shows that account a one-line
+#      banner before login - "Blighter child <version> · <this PC's name> ·
+#      <system>" (/etc/blighter/ssh-banner) - so the parent app's "Find PCs"
+#      can list this PC without a password.  Owners' own SSH logins do not
+#      see it.
 #   4. replaces squid.conf with the Blighter one (old file backed up).  If
 #      Squid looks set up by something else (squid.conf changed from
 #      Ubuntu's original, or extra files in /etc/squid/conf.d), setup stops
@@ -15,6 +20,8 @@
 #   5. starts the child-only firewall forcing web traffic through Squid
 #   6. sets and locks the desktop proxy to 127.0.0.1:3128
 #   7. adds a proxy-aware Discord launcher if Discord (.deb or snap) is installed
+#   and switches on the login times check (blighter-login.timer, since
+#   1.4.0; login times themselves are set from the parent app's Controls tab)
 #
 # The first time it runs it asks the parent to confirm that the parent app is
 # already installed on their own PC (it is needed to finish connecting).
@@ -32,6 +39,8 @@
 #                                                  missing ones are created
 #         sudo blighter-setup --password           change the blighter password
 #         sudo blighter-setup --remove [--yes]      undo everything
+#         blighter-setup --banner                  (package upgrade) rewrite the
+#                                                  banner and the SSH drop-in
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -50,6 +59,7 @@ SQUID_CONF=/etc/squid/squid.conf
 TEMPLATE=/usr/share/blighter-child/squid.conf
 SUDOERS=/etc/sudoers.d/blighter
 SSHD_DROPIN=/etc/ssh/sshd_config.d/10-blighter.conf
+BANNER=$CONF_DIR/ssh-banner
 DCONF_PROFILE=/etc/dconf/profile/user
 DCONF_KEYS=/etc/dconf/db/local.d/00-blighter-proxy
 DCONF_LOCKS=/etc/dconf/db/local.d/locks/00-blighter-proxy
@@ -70,6 +80,10 @@ svc() { # svc <action> <unit>
 remove_all() {
     local yes=$1
     say "Removing Blighter Restrictor configuration"
+    # Login times: unlock the child's account first if Blighter locked it.
+    svc disable blighter-login.timer
+    svc stop blighter-login.timer
+    /usr/sbin/blighter-apply release >/dev/null 2>&1 || true
     svc disable blighter-firewall.service
     svc stop blighter-firewall.service
     /usr/sbin/blighter-firewall stop 2>/dev/null || nft delete table inet blighter 2>/dev/null || true
@@ -107,23 +121,52 @@ other_ips() {
     { hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | grep -vx "${m:-none}" | head -5 | tr '\n' ' '; } || true
 }
 
-# Password login over SSH for the admin account only (drop-in if needed).
-ensure_ssh() {
+# The SSH drop-in, for the admin account only: password login (if the PC
+# does not allow it already) and, since 1.4.0, the one-line banner shown
+# before login (written by blighter-apply banner) that lets the parent app's
+# "Find PCs" recognise this PC.  Checked with sshd -t; if sshd rejects it,
+# the banner is left out, and if it still rejects it nothing is kept.
+write_ssh_dropin() {
     rm -f "$SSHD_DROPIN"
     mkdir -p /run/sshd
-    # Missing host keys only (an existing key is the PC's identity - never replaced).
-    ssh-keygen -A >/dev/null 2>&1 || true
-    local pw_setting
+    local pw_setting pw=no
     pw_setting=$(sshd -T -C "user=$ADMIN,host=parent,addr=192.168.0.2" 2>/dev/null \
             | grep -i '^passwordauthentication' || echo "unknown")
-    if ! echo "$pw_setting" | grep -qi ' yes$'; then
-        printf '# Blighter Restrictor: allow password login for the admin account only.\nMatch User %s\n    PasswordAuthentication yes\n    KbdInteractiveAuthentication yes\n' \
-            "$ADMIN" > "$SSHD_DROPIN"
-        sshd -t || { rm -f "$SSHD_DROPIN"; die "sshd rejected the drop-in"; }
-        echo "Password login enabled for '$ADMIN' only."
-    else
-        echo "Password login already allowed."
-    fi
+    echo "$pw_setting" | grep -qi ' yes$' || pw=yes
+    /usr/sbin/blighter-apply banner >/dev/null || warn "The SSH banner could not be written."
+    local banner=no
+    [ -s "$BANNER" ] && banner=yes
+    for _ in 1 2; do
+        if [ "$pw" = no ] && [ "$banner" = no ]; then rm -f "$SSHD_DROPIN"; break; fi
+        {
+            echo "# Blighter Restrictor: settings for the admin account only."
+            echo "Match User $ADMIN"
+            if [ "$pw" = yes ]; then
+                echo "    PasswordAuthentication yes"
+                echo "    KbdInteractiveAuthentication yes"
+            fi
+            if [ "$banner" = yes ]; then echo "    Banner $BANNER"; fi
+        } > "$SSHD_DROPIN"
+        sshd -t 2>/dev/null && break
+        if [ "$banner" = yes ]; then
+            banner=no
+            warn "sshd rejected the banner setting - left out (\"Find PCs\" in the parent app will not list this PC)."
+        else
+            rm -f "$SSHD_DROPIN"
+            sshd -t || true
+            die "sshd rejected the drop-in"
+        fi
+    done
+    if [ "$pw" = yes ]; then echo "Password login enabled for '$ADMIN' only."; else echo "Password login already allowed."; fi
+    if [ "$banner" = yes ]; then echo "SSH banner for the parent app's \"Find PCs\": $(cat "$BANNER")"; fi
+}
+
+# Password login over SSH for the admin account only, and SSH on.
+ensure_ssh() {
+    # Missing host keys only (an existing key is the PC's identity - never replaced).
+    mkdir -p /run/sshd
+    ssh-keygen -A >/dev/null 2>&1 || true
+    write_ssh_dropin
     svc enable ssh.socket
     svc enable ssh.service
     svc try-reload-or-restart ssh
@@ -178,10 +221,20 @@ if [ "${1:-}" = "--details" ]; then
         systemctl is-active --quiet ssh || systemctl is-active --quiet ssh.socket \
             && echo "SSH server: running" || warn "SSH server is not running - check: systemctl status ssh"
         systemctl restart blighter-firewall.service && echo "Firewall: on" || warn "The Blighter firewall could not be started."
+        systemctl enable --now blighter-login.timer >/dev/null 2>&1 && echo "Login times check: on" \
+            || warn "The login times check could not be started."
         systemctl is-active --quiet squid || systemctl start squid || true
         systemctl is-active --quiet squid && echo "Squid: running" || warn "Squid is not running - check: systemctl status squid"
     fi
     echo "Done.  Nothing in the rules, settings or activity log was changed."
+    exit 0
+fi
+
+if [ "${1:-}" = "--banner" ]; then
+    # Package upgrade (postinst): this version's banner and drop-in; SSH reloaded.
+    [ -r "$CONF" ] || exit 0
+    write_ssh_dropin
+    svc try-reload-or-restart ssh
     exit 0
 fi
 
@@ -333,6 +386,7 @@ if have_systemd; then
     systemctl daemon-reload
     systemctl enable blighter-firewall.service
     systemctl restart blighter-firewall.service
+    systemctl enable --now blighter-login.timer
 else
     /usr/sbin/blighter-firewall start
 fi

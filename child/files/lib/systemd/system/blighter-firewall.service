@@ -1,5 +1,7 @@
 # Blighter Restrictor - loads the child-account firewall at boot.
 # Purpose: keep the child's web traffic forced through Squid after every boot.
+# Also rewrites the SSH banner (blighter-apply banner) so the parent app's
+# "Find PCs" shows the PC's current name if it was renamed.
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This program is free software: you can redistribute it and/or modify it
@@ -17,6 +19,7 @@ Wants=network-pre.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/blighter-firewall start
+ExecStartPost=-/usr/sbin/blighter-apply banner
 ExecReload=/usr/sbin/blighter-firewall start
 ExecStop=/usr/sbin/blighter-firewall stop
 

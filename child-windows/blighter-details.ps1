@@ -10,7 +10,9 @@
 #      SSH firewall rule, the rest of the firewall (blighter-system.ps1
 #      repair) and the network type (must be "Private" for the parent app).
 #      The PC's SSH identity (host keys) is kept: it is how the parent app
-#      recognises this PC when its address changes.
+#      recognises this PC when its address changes.  The SSH banner the
+#      parent app's "Find PCs" reads is rewritten too (since 1.4.0), so it
+#      shows the PC's current name if it was renamed.
 #   2  change the "blighter" account's password (then enter the new one in
 #      the parent app: Edit child, or Reconnect)
 # Nothing here changes the filter rules, the activity log or the child's
@@ -91,6 +93,8 @@ function Repair-Connection {
     Write-Host ""
     Write-Host "Checking the connection (this can take a minute)..." -ForegroundColor Cyan
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $System repair
+    # The "Find PCs" banner (since 1.4.0): this PC's current name.
+    & (Join-Path $Here "blighter-apply.cmd") banner | Out-Null
     foreach ($np in @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
         Write-Host ("  Network '{0}': {1}" -f $np.Name, $np.NetworkCategory)
         if ("$($np.NetworkCategory)" -eq "Public") {

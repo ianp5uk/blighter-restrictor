@@ -36,6 +36,29 @@
 #   logout              log the child's account out (unsaved work is lost)
 #   shutdown / restart  switch the PC off / restart it, 5 seconds after
 #                       replying (so the parent app gets the answer)
+#   action logout|restart|shutdown 0|5|15
+#                       the same, straight away (0) or after a warning on the
+#                       child's screen at 5 minutes, or at 15 and 5 minutes
+#                       (since 1.4.0).  "action cancel" cancels a waiting one
+#   login-set           read the login times JSON on stdin (see
+#                       common/lockout.py) and put it in force
+#   extend HH:MM|end    extra time: the child may log in until HH:MM today
+#   tick                the minute check run by blighter-login.timer: lock /
+#                       unlock the child's account, warnings, warned actions
+#   release             unlock the child's account if Blighter locked it
+#                       (used by blighter-setup --remove)
+# Login times lock the child's account by giving it an expiry date in the
+# past (usermod -e 1: no new logins of any kind) and unlock it by putting
+# back the expiry it had before (normally none).  Only the recorded child
+# account is ever locked - never an administrator, never "blighter".
+#   banner              (since 1.4.0; used by blighter-setup, the package
+#                       upgrade and at boot) rewrite /etc/blighter/ssh-banner,
+#                       the one line the SSH server shows the "blighter"
+#                       account before login, e.g.
+#                       "Blighter child 1.4.0 · Jacks-Laptop · Ubuntu 24.04",
+#                       so the parent app's "Find PCs" can recognise this PC
+#                       without a password (this version, the PC's own name
+#                       read now, the system).  Nothing if setup has not run.
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -51,6 +74,7 @@ import ipaddress
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -59,8 +83,9 @@ sys.path.insert(0, "/usr/lib/blighter-child")
 import domains  # noqa: E402  (shared validation, same file as the parent app)
 import blockpage  # noqa: E402  (neutral error pages, same file as the Windows helper)
 import logtail  # noqa: E402  (incremental log reading, same file as the Windows helper)
+import lockout  # noqa: E402  (login times and warned actions, same file as the Windows helper)
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 BASE = "/etc/squid/blighter"
 MODE_FILE = os.path.join(BASE, "mode")
 ALLOW_FILE = os.path.join(BASE, "allow.list")
@@ -74,6 +99,9 @@ CHILD_CONF = "/etc/blighter/child.conf"
 CONTROL_FILE = "/etc/blighter/control"   # "open parent 2026-11-28 14:32:00"; missing = filtered
 LEGACY_PAUSED = "/etc/blighter/paused"   # 1.2.x Pause (now Open all), migrated by init / reload
 LOG_DIR = "/var/log/squid"
+LOGIN_DIR = "/etc/blighter/login"        # login times: schedule, extra time, warned action, lock state
+PREV_EXPIRE = os.path.join(LOGIN_DIR, "previous-expiry")
+ADMIN_USER = "blighter"
 MANAGED = (MODE_FILE, ALLOW_FILE, BLOCK_FILE, RULES_FILE)
 MAX_LOG_LINES = 100000
 
@@ -327,6 +355,7 @@ def cmd_get():
         "home_net": home_net(),
         "opera": opera_blocked(),
         "control": read_control(),
+        "login": engine().describe(),
     })
 
 
@@ -553,6 +582,189 @@ def cmd_power(action):
                                      f"the PC: {text[-300:]}"}, 1)
     out({"ok": True, "message": ("The PC is shutting down." if action == "shutdown" else "The PC is restarting.")})
 
+# ---- login times and warned actions (since 1.4.0) ---------------------------------
+def _shadow_expiry(user):
+    """The account's expiry field in /etc/shadow ("" = never), or None if not found."""
+    for line in read("/etc/shadow").splitlines():
+        parts = line.split(":")
+        if len(parts) > 7 and parts[0] == user:
+            return parts[7]
+    return None
+
+
+def _lockable(user):
+    import pwd
+    if not user or user in ("root", ADMIN_USER):
+        return False
+    try:
+        return pwd.getpwnam(user).pw_uid >= 1000
+    except KeyError:
+        return False
+
+
+def _is_admin(user):
+    if not user:
+        return None
+    code, groups = run(["id", "-nG", user])
+    if code != 0:
+        return None
+    import pwd
+    try:
+        if pwd.getpwnam(user).pw_uid == 0:
+            return True
+    except KeyError:
+        return None
+    return bool(set(groups.split()) & {"sudo", "admin", "wheel"})
+
+
+class LinuxPC:
+    state_dir = LOGIN_DIR
+
+    def child_user(self):
+        return child_user()
+
+    def child_is_admin(self):
+        user = child_user()
+        if not _lockable(user):
+            return None
+        return _is_admin(user)
+
+    def set_locked(self, locked):
+        user = child_user()
+        if not _lockable(user):
+            return False, f"'{user}' is not an account Blighter may lock."
+        current = _shadow_expiry(user)
+        if current is None:
+            return False, f"No account '{user}' on this PC."
+        if locked:
+            if current == "1":
+                return True, "already locked"
+            os.makedirs(LOGIN_DIR, exist_ok=True)
+            with open(PREV_EXPIRE, "w") as f:
+                f.write(current + "\n")
+            code, text = run(["usermod", "--expiredate", "1", user])
+        else:
+            if current != "1":
+                return True, "not locked"
+            prev = read(PREV_EXPIRE).strip()
+            if prev == "1":
+                prev = ""
+            date = ""
+            if prev.isdigit():
+                date = time.strftime("%Y-%m-%d", time.gmtime(int(prev) * 86400))
+            code, text = run(["usermod", "--expiredate", date, user])
+        return code == 0, text
+
+    def child_logged_in(self):
+        user = child_user()
+        if not user:
+            return False
+        code, state = run(["loginctl", "show-user", user, "-p", "State", "--value"])
+        return code == 0 and state.strip() in ("active", "online")
+
+    def logout(self):
+        user = child_user()
+        code, text = run(["loginctl", "terminate-user", user])
+        return code == 0, text
+
+    def power(self, action):
+        verb = "poweroff" if action == "shutdown" else "reboot"
+        code, text = run(["systemctl", verb]) if have_systemd() else \
+            run(["shutdown", "-h" if action == "shutdown" else "-r", "+0"])
+        return code == 0, text
+
+    def notify(self, title, text):
+        """A desktop notification that stays until dismissed, in each of the
+        child's desktop sessions (best effort)."""
+        import pwd
+        user = child_user()
+        try:
+            uid = pwd.getpwnam(user).pw_uid
+        except KeyError:
+            return
+        bus = f"/run/user/{uid}/bus"
+        if not os.path.exists(bus):
+            return
+        try:
+            subprocess.Popen(["runuser", "-u", user, "--", "env", f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus}",
+                              "notify-send", "--urgency=critical", "--app-name=Blighter Restrictor",
+                              "--icon=dialog-warning", title, text],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass
+
+    def bypassed(self):
+        return False
+
+    def log(self, text):
+        try:
+            subprocess.run(["logger", "-t", "blighter-login", text], timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def engine():
+    return lockout.Engine(LinuxPC())
+
+
+def kick_tick():
+    """Run the minute check now (in the background) so a change takes effect at once."""
+    if have_systemd():
+        run(["systemctl", "start", "--no-block", "blighter-login.service"])
+
+
+def cmd_login_set():
+    try:
+        data = json.loads(sys.stdin.read(200_000))
+    except ValueError:
+        out({"ok": False, "message": "Input was not valid JSON"}, 1)
+    ok, msg = engine().set_schedule(data)
+    if ok:
+        kick_tick()
+        time.sleep(1.5)
+    out({"ok": ok, "message": msg, "login": engine().describe()}, 0 if ok else 1)
+
+
+def cmd_extend(arg):
+    ok, msg = engine().set_extension("" if arg == "end" else arg)
+    if ok:
+        kick_tick()
+        time.sleep(1.5)
+    out({"ok": ok, "message": msg, "login": engine().describe()}, 0 if ok else 1)
+
+
+def cmd_action(action, warn):
+    eng = engine()
+    if action == "cancel":
+        ok, msg = eng.cancel_pending()
+    elif warn == 0:
+        eng.cancel_pending() if eng.pending() else None
+        if action == "logout":
+            cmd_logout()
+        cmd_power(action)
+    else:
+        ok, msg = eng.set_pending(action, warn)
+        kick_tick()
+    out({"ok": ok, "message": msg, "login": eng.describe()}, 0 if ok else 1)
+
+
+def cmd_tick():
+    eng = engine()
+    if not os.path.exists(CHILD_CONF):
+        return
+    eng.tick()
+
+
+def cmd_release():
+    ok, msg = engine().release()
+    for name in (lockout.PENDING_FILE, lockout.EXTENSION_FILE):
+        try:
+            os.remove(os.path.join(LOGIN_DIR, name))
+        except FileNotFoundError:
+            pass
+    out({"ok": ok, "message": msg}, 0 if ok else 1)
+
+
 
 def cmd_reload():
     # Rewrite rules.conf too, so a PC set up by an older version gets the
@@ -649,8 +861,47 @@ def cmd_init():
     print("Blighter rule files ready in " + BASE)
 
 
+# ---- SSH pre-login banner for the parent app's "Find PCs" (since 1.4.0) --------
+BANNER_FILE = "/etc/blighter/ssh-banner"
+
+
+def os_name():
+    """'Ubuntu 24.04' from /etc/os-release."""
+    vals = {}
+    for line in read("/etc/os-release").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            vals[k.strip()] = v.strip().strip('"')
+    return " ".join(x for x in (vals.get("NAME", "Linux"), vals.get("VERSION_ID", "")) if x)
+
+
+def _banner_part(text):
+    """One printable part of the banner (no separator dots, at most 64 characters)."""
+    return "".join(c for c in text if c.isprintable() and c != "\u00b7").strip()[:64]
+
+
+def banner_text():
+    host = _banner_part(socket.gethostname().split(".")[0]) or "PC"
+    system = _banner_part(os_name()) or "Linux"
+    return f"Blighter child {VERSION} \u00b7 {host} \u00b7 {system}\n"
+
+
+def cmd_banner():
+    if not os.path.isdir(os.path.dirname(BANNER_FILE)):
+        out({"ok": True, "message": "Blighter is not set up on this PC - no banner written."})
+    text = banner_text()
+    if read(BANNER_FILE) != text:
+        tmp = BANNER_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, BANNER_FILE)
+    out({"ok": True, "message": "SSH banner: " + text.strip()})
+
+
 USAGE = ("usage: blighter-apply get|status|set|reload|log N [rotated]|logstart N [rotated]|"
-         "lognext INO OFFSET|init|netinfo|filtered|block|open [local]|logout|shutdown|restart")
+         "lognext INO OFFSET|init|netinfo|filtered|block|open [local]|logout|shutdown|restart|"
+         "action logout|restart|shutdown 0|5|15|action cancel|login-set|extend HH:MM|end|tick|release|banner")
 
 
 def main():
@@ -684,6 +935,20 @@ def main():
         cmd_logout()
     elif cmd in ("shutdown", "restart") and not rest:
         cmd_power(cmd)
+    elif cmd == "action" and rest == ["cancel"]:
+        cmd_action("cancel", 0)
+    elif cmd == "action" and len(rest) == 2 and rest[0] in lockout.ACTIONS and rest[1] in ("0", "5", "15"):
+        cmd_action(rest[0], int(rest[1]))
+    elif cmd == "login-set" and not rest:
+        cmd_login_set()
+    elif cmd == "extend" and len(rest) == 1 and (rest[0] == "end" or lockout.parse_hhmm(rest[0]) is not None):
+        cmd_extend(rest[0])
+    elif cmd == "tick" and not rest:
+        cmd_tick()
+    elif cmd == "release" and not rest:
+        cmd_release()
+    elif cmd == "banner" and not rest:
+        cmd_banner()
     else:
         sys.exit(USAGE)
 

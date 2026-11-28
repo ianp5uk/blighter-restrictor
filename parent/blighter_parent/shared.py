@@ -1,6 +1,7 @@
 # -----------------------------------------------------------------------------
 # Blighter Restrictor - shared domain rules and small shared helpers.
-# Purpose: import common/domains.py whether running from the packaged app
+# Purpose: import common/domains.py and common/lockout.py (login times,
+# since 1.4.0) whether running from the packaged app
 # (where the build copies it into this package) or straight from the source
 # tree (where it lives in ../../common).  Also holds helpers used by several
 # windows: comparing usernames (Windows names ignore case) and the warning
@@ -19,9 +20,11 @@ import sys
 
 try:
     from . import domains  # noqa: F401  (packaged)
+    from . import lockout  # noqa: F401
 except ImportError:  # running from source
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "common"))
     import domains  # noqa: F401
+    import lockout  # noqa: F401
 
 
 
@@ -45,4 +48,4 @@ def admin_warning_html(status):
     return ""
 
 
-__all__ = ["domains", "same_user", "admin_warning_html", "ADMIN_WARNING"]
+__all__ = ["domains", "lockout", "same_user", "admin_warning_html", "ADMIN_WARNING"]

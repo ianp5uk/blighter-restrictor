@@ -8,7 +8,8 @@
 # firewall scripts, the managed squid.conf, the shared common/domains.py
 # (same file as the parent app and the Ubuntu package) and common/blockpage.py
 # (the neutral error page, same file as the Ubuntu package), common/logtail.py
-# (reading the activity log a piece at a time) and the official
+# (reading the activity log a piece at a time), common/lockout.py (login
+# times and warned actions), blighter-warning.ps1 (the warning box) and the official
 # python.org "embeddable" Python, so nothing has to be compiled on Windows.
 # Squid itself is downloaded from Diladele by the setup script.
 # Usage: ./build-windows-child.sh      (needs curl and zip)
@@ -41,8 +42,8 @@ mkdir -p "$STAGE/python"
 unzip -q "$PY_ZIP" -d "$STAGE/python"
 cp child-windows/blighter-apply.py child-windows/blighter-system.ps1 \
    child-windows/blighter-setup.ps1 child-windows/blighter-details.ps1 \
-   child-windows/squid.conf "$STAGE/"
-cp common/domains.py common/blockpage.py common/logtail.py "$STAGE/"
+   child-windows/blighter-warning.ps1 child-windows/squid.conf "$STAGE/"
+cp common/domains.py common/blockpage.py common/logtail.py common/lockout.py "$STAGE/"
 cp LICENSE "$STAGE/LICENSE.txt"
 cp THIRD-PARTY-NOTICES.txt "$STAGE/"
 # Windows command files need CRLF line endings.

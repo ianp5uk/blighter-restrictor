@@ -15,6 +15,18 @@
 #      greeting only - no login, so the password is never sent to another
 #      machine) and compared with the remembered one
 # The address of the matching PC is returned; None if it was not found.
+#
+# find_pcs() (since 1.4.0, the "Find PCs" button when adding a child) lists
+# the Blighter child PCs on this PC's own network(s): the same addresses as
+# above (this PC's /24 network(s) only), the same SSH-port check, then for
+# each the host key and the one-line banner that a Blighter child's SSH
+# server shows before login for the "blighter" account, e.g.
+# "Blighter child 1.4.0 · Jacks-Laptop · Ubuntu 24.04" (written by the
+# child's setup).  It asks for the banner with the SSH "none" login, which
+# carries no password, so the password is never sent.  Only computers with
+# that banner are listed - routers, NAS drives and other PCs are left out.
+# The name shown is the one the PC gives itself, never the router's.
+#
 # Nothing is scanned outside the home network, and only the SSH port.
 #
 # Copyright (C) 2026 Ian Packer
@@ -33,6 +45,8 @@ from concurrent.futures import ThreadPoolExecutor
 import paramiko
 
 MAX_HOSTS = 1024
+BANNER_PREFIX = "Blighter child"
+ADMIN = "blighter"
 CONNECT_TIMEOUT = 0.7
 KEY_TIMEOUT = 6
 
@@ -65,10 +79,14 @@ def read_host_key(ip, port=22, prefer=None, timeout=KEY_TIMEOUT):
     try:
         t.banner_timeout = timeout
         if prefer:
+            # An RSA key is offered as rsa-sha2-512/256 by current OpenSSH
+            # (plain ssh-rsa is refused), so ask for those first.
+            want = ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"] if prefer == "ssh-rsa" else [prefer]
             opts = t.get_security_options()
             types = list(opts.key_types)
-            if prefer in types:
-                opts.key_types = [prefer] + [k for k in types if k != prefer]
+            first = [k for k in want if k in types]
+            if first:
+                opts.key_types = first + [k for k in types if k not in first]
         t.start_client(timeout=timeout)
         return t.get_remote_server_key()
     finally:
@@ -106,6 +124,20 @@ def local_addresses():
         if _private(ip) and ip not in out:
             out.append(ip)
     return out
+
+
+def own_network_hosts():
+    """This PC's own /24 network(s), without its own addresses.  Private only."""
+    own = local_addresses()
+    hosts = []
+    for ip in own:
+        for h in ipaddress.IPv4Network(f"{ip}/24", strict=False).hosts():
+            h = str(h)
+            if h not in hosts and h not in own:
+                hosts.append(h)
+            if len(hosts) >= MAX_HOSTS:
+                return hosts
+    return hosts
 
 
 def candidate_hosts(last_ip):
@@ -160,3 +192,80 @@ def find_pc(host_key_text, last_ip, port=22):
             if ip:
                 return ip
     return None
+
+
+# ---- "Find PCs": Blighter child PCs on this PC's own network(s) -------------------
+def parse_banner(text):
+    """{'version', 'name', 'os'} from a Blighter child's banner; None for any other."""
+    line = (text or "").strip().splitlines()[0].strip() if (text or "").strip() else ""
+    if not line.startswith(BANNER_PREFIX + " "):
+        return None
+    parts = [p.strip() for p in line[len(BANNER_PREFIX):].split("\u00b7")]
+    if len(parts) < 3 or not parts[0]:
+        return None
+    return {"version": parts[0][:20], "name": parts[1][:64], "os": " \u00b7 ".join(parts[2:])[:64]}
+
+
+def read_banner(ip, port=22, timeout=KEY_TIMEOUT):
+    """(host key, banner text) at ip:port.  The banner is asked for with the
+    SSH "none" login for the admin account - no password is ever sent."""
+    sock = socket.create_connection((ip, port), timeout=timeout)
+    t = paramiko.Transport(sock)
+    try:
+        t.banner_timeout = timeout
+        t.start_client(timeout=timeout)
+        key = t.get_remote_server_key()
+        try:
+            t.auth_none(ADMIN)
+        except (paramiko.BadAuthenticationType, paramiko.AuthenticationException, paramiko.SSHException):
+            pass
+        banner = t.get_banner()
+        if isinstance(banner, bytes):
+            banner = banner.decode("utf-8", "replace")
+        return key, banner or ""
+    finally:
+        t.close()
+
+
+def _known(ip, port, key, known_keys):
+    """True if this PC is one already in the list (same SSH identity).  A
+    saved identity of another key type is read again in that type."""
+    for k in known_keys:
+        if same_key(key, k):
+            return True
+    for name in {k.get_name() for k in known_keys} - {key.get_name()}:
+        try:
+            other = read_host_key(ip, port, prefer=name)
+        except Exception:
+            continue
+        if any(same_key(other, k) for k in known_keys):
+            return True
+    return False
+
+
+def find_pcs(known_key_texts=(), port=22, hosts=None):
+    """Blighter child PCs on this PC's own network(s), sorted by name:
+    [{ip, name, os, version, host_key_text, known}] (known = already in the
+    list, by SSH identity).  hosts: the addresses to try (tests only)."""
+    known_keys = [k for k in (key_from_text(t) for t in known_key_texts) if k]
+    if hosts is None:
+        hosts = own_network_hosts()
+    with ThreadPoolExecutor(max_workers=64) as pool:
+        open_hosts = [ip for ip in pool.map(lambda h: _port_open(h, port), hosts) if ip]
+
+    def check(ip):
+        try:
+            key, banner = read_banner(ip, port)
+        except Exception:
+            return None
+        info = parse_banner(banner)
+        if not info:
+            return None
+        info.update(ip=ip, host_key_text=key_to_text(key), known=_known(ip, port, key, known_keys))
+        return info
+
+    if not open_hosts:
+        return []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        found = [r for r in pool.map(check, open_hosts) if r]
+    return sorted(found, key=lambda r: (r["name"].lower(), ipaddress.IPv4Address(r["ip"])))

@@ -32,6 +32,8 @@
 # Actions:
 #   capture   save the "before" state (only the first time; never overwritten)
 #   enable    apply everything above and create the scheduled tasks
+#             ("Enforce", "Rotate Squid log" and, since 1.4.0, "Login times":
+#             blighter-apply.py tick every minute and at start-up, as SYSTEM)
 #   enforce   re-check and repair (run by the "Enforce" task every 10 minutes,
 #             at start-up and at every log-on, as SYSTEM); does nothing while off
 #   off       switch Blighter off completely but leave everything installed:
@@ -533,6 +535,16 @@ function Register-Tasks {
     $logon = New-ScheduledTaskTrigger -AtLogOn
     Register-ScheduledTask -TaskName "Enforce" -TaskPath $TaskPath -Action $act -Trigger @($every, $boot, $logon) `
         -Principal $principal -Settings $settings -Description "Blighter Restrictor: keep web filtering in force" -Force | Out-Null
+
+    # Login times (since 1.4.0): the helper's minute check, as SYSTEM.
+    $py = Join-Path $Here "python\python.exe"
+    $apply = Join-Path $Here "blighter-apply.py"
+    $lt = New-ScheduledTaskAction -Execute $py -Argument "-I -X utf8 `"$apply`" tick" -WorkingDirectory $Here
+    $minute = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+    $ltSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                    -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName "Login times" -TaskPath $TaskPath -Action $lt -Trigger @($minute, $boot) `
+        -Principal $principal -Settings $ltSettings -Description "Blighter Restrictor: login times and warnings" -Force | Out-Null
 
     $rot = New-ScheduledTaskAction -Execute $SquidExe -Argument "-k rotate -f /etc/squid/squid.conf"
     $daily = New-ScheduledTaskTrigger -Daily -At "03:00"

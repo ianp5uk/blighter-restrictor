@@ -11,6 +11,15 @@
 #                    connection, so the app can find the PC again by itself
 #                    when its address changes (no router settings needed).
 #                    A second entry for the same PC is refused.
+#                    "Find PCs…" (Add only, since 1.4.0) opens FindPCsDialog.
+#   FindPCsDialog    lists the Blighter child PCs on this PC's own
+#                    network(s) - name, system, Blighter version, address -
+#                    read from each PC's SSH greeting without a password
+#                    (discovery.find_pcs).  PCs already in the list are
+#                    marked "already added" and cannot be picked.  Picking
+#                    one fills in the address (and the name, if empty) in
+#                    Add child; the rest is entered as before.  PCs on other
+#                    networks (e.g. a guest network) must be entered by hand.
 #   ReconnectDialog  when the app cannot find a child's PC: "Find
 #                    automatically" searches the home network for it; or
 #                    enter the address shown on the PC (Blighter-Details.cmd
@@ -21,7 +30,7 @@
 #                    identity is replaced.  The child's name, username and
 #                    the PC's own filters and activity log are not changed.
 #   ask_password     asks for a password that is not saved.
-#   FitDialog        base for the two dialogs: sized from the text size and
+#   FitDialog        base for the dialogs: sized from the text size and
 #                    the main window (not fixed pixels), and grows to fit
 #                    messages as they appear, so nothing overlaps.
 #
@@ -38,10 +47,11 @@ import dataclasses
 import ipaddress
 import re
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-                               QInputDialog, QLabel, QLineEdit, QMessageBox,
-                               QPushButton, QSpinBox, QVBoxLayout)
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QFormLayout,
+                               QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+                               QMessageBox, QPushButton, QSpinBox, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout)
 
 from . import discovery
 from .config_store import Child
@@ -124,14 +134,24 @@ class ChildDialog(FitDialog):
 
         form = QFormLayout()
         form.addRow("Child's name:", self.name)
-        form.addRow("PC address:", self.ip)
+        if child:
+            form.addRow("PC address:", self.ip)
+        else:
+            find = QPushButton("Find PCs…")
+            find.setToolTip("List the Blighter child PCs on this PC's network")
+            find.clicked.connect(self._find_pcs)
+            ip_row = QHBoxLayout()
+            ip_row.addWidget(self.ip, 1)
+            ip_row.addWidget(find)
+            form.addRow("PC address:", ip_row)
         form.addRow("Child's username:", self.child_user)
         form.addRow("Admin login:", self.admin_user)
         form.addRow("Admin password:", self.password)
         form.addRow("SSH port:", self.port)
 
         hint = QLabel("Enter the address, username and login shown at the end of the Blighter "
-                      "setup on the child's PC.  You only need to do this once: if the PC's "
+                      "setup on the child's PC" + ("" if child else " (or press Find PCs to fill in the address)")
+                      + ".  You only need to do this once: if the PC's "
                       "address changes later, the app finds it again by itself.")
         hint.setWordWrap(True)
 
@@ -191,6 +211,14 @@ class ChildDialog(FitDialog):
         self.result_label.setText(text)
         self.refit()
 
+    def _find_pcs(self):
+        d = FindPCsDialog(self.store, self.port.value(), parent=self)
+        if d.exec() and d.picked:
+            self.ip.setText(d.picked["ip"])
+            if not self.name.text().strip():
+                self.name.setText(d.picked["name"])
+            self._result("")
+
     def _test(self):
         try:
             child, pw = self._collect()
@@ -242,6 +270,119 @@ class ChildDialog(FitDialog):
                 "The password could not be saved to the system keyring "
                 f"({self.store.keyring_error}).\nIt will be remembered until you close the app.")
         self.saved_child = child
+        self.accept()
+
+
+class FindPCsDialog(FitDialog):
+    """The Blighter child PCs on this PC's own network(s), to pick one for Add child."""
+    chars = 70
+
+    def __init__(self, store, port=22, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.port = port
+        self.picked = None
+        self._open = True               # False once closed: a late search result is ignored
+        self.setWindowTitle("Find PCs")
+
+        note = QLabel("Only this PC's own network is searched.  A PC on another network "
+                      "(for example a guest network) must be added by entering its address.")
+        note.setWordWrap(True)
+        self.list = QTreeWidget()
+        self.list.setHeaderLabels(["Name", "System", "Blighter", "Address", ""])
+        self.list.setRootIsDecorated(False)
+        self.list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list.header().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.list.header().setStretchLastSection(True)
+        self.list.itemSelectionChanged.connect(self._selection)
+        self.list.itemDoubleClicked.connect(lambda *_: self._pick())
+        self.message = QLabel("")
+        self.message.setWordWrap(True)
+        self.btn_search = QPushButton("Search again")
+        self.btn_search.clicked.connect(self._search)
+        self.btn_use = QPushButton("Use this PC")
+        self.btn_use.setEnabled(False)
+        self.btn_use.clicked.connect(self._pick)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        row = QHBoxLayout()
+        row.addWidget(self.btn_search)
+        row.addStretch()
+        row.addWidget(self.btn_use)
+        row.addWidget(cancel)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(note)
+        lay.addWidget(self.list)
+        lay.addWidget(self.message)
+        lay.addLayout(row)
+        QTimer.singleShot(0, self._search)
+
+    def done(self, result):
+        self._open = False
+        super().done(result)
+
+    def _say(self, text, colour=None):
+        self.message.setText(f"<span style='color:{colour}'>{text}</span>" if colour else text)
+        self.refit()
+
+    def _search(self):
+        self.btn_search.setEnabled(False)
+        self.btn_search.setText("Searching…")
+        self.btn_use.setEnabled(False)
+        self.list.clear()
+        self._say("Searching this PC's network for Blighter child PCs (a few seconds)…")
+        known = [c.host_key for c in self.store.children if c.host_key]
+        port = self.port
+
+        def finished():
+            self.btn_search.setEnabled(True)
+            self.btn_search.setText("Search again")
+
+        def ok(found):
+            if not self._open:
+                return
+            finished()
+            for pc in found:
+                it = QTreeWidgetItem([pc["name"], pc["os"], pc["version"], pc["ip"],
+                                      "already added" if pc["known"] else ""])
+                it.setData(0, Qt.UserRole, pc)
+                if pc["known"]:
+                    it.setFlags(Qt.NoItemFlags)
+                    it.setToolTip(0, "This PC is already in the list")
+                self.list.addTopLevelItem(it)
+            new = [pc for pc in found if not pc["known"]]
+            if not found:
+                self._say("No Blighter child PCs found.  Make sure the PC is switched on, Blighter "
+                          "is set up on it and it is on the same network as this PC - or enter its "
+                          "address.", "#c0392b")
+            elif not new:
+                self._say("All the PCs found are already in the list.")
+            else:
+                self._say("Pick a PC, then press Use this PC.")
+                if len(new) == 1:
+                    for i in range(self.list.topLevelItemCount()):
+                        it = self.list.topLevelItem(i)
+                        if not it.data(0, Qt.UserRole)["known"]:
+                            self.list.setCurrentItem(it)
+
+        def err(m):
+            if not self._open:
+                return
+            finished()
+            self._say(f"The search failed: {m}", "#c0392b")
+
+        run_bg(lambda: discovery.find_pcs(known, port), ok, err)
+
+    def _selection(self):
+        it = self.list.currentItem()
+        self.btn_use.setEnabled(bool(it and it.isSelected() and not it.data(0, Qt.UserRole)["known"]))
+
+    def _pick(self):
+        it = self.list.currentItem()
+        if not it or it.data(0, Qt.UserRole)["known"]:
+            return
+        self.picked = it.data(0, Qt.UserRole)
         self.accept()
 
 

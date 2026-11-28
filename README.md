@@ -5,7 +5,7 @@ component (Ubuntu or Windows PCs), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.3.0
+# Blighter Restrictor 1.4.0
 
 Monitor and restrict your children's web access on their Linux or
 Windows 10/11 PCs.
@@ -130,10 +130,10 @@ will be done if there is sufficient interest.
 
 ## 1. Install the parent app (first)
 
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.3.0_all.deb`, then start
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.4.0_all.deb`, then start
 *Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
 
-**Windows:** run `BlighterRestrictor-Setup-1.3.0.exe` (see "Building for
+**Windows:** run `BlighterRestrictor-Setup-1.4.0.exe` (see "Building for
 Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
 click *More info → Run anyway*.
 
@@ -146,7 +146,7 @@ should ideally **not** be an administrator. The builds targeted Debian
 style Linux and have been tested on Ubuntu 26.04
 
 ```bash
-sudo apt install ./blighter-child_1.3.0_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.4.0_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
@@ -156,6 +156,7 @@ installed on your own PC. It then asks you to choose a password for the
 * saves the existing `/etc/squid/squid.conf` as `squid.conf.pre-blighter-<date>` and installs its own
 * allows SSH password login for the `blighter` account only, and switches SSH on
 * starts the child-only firewall (`blighter-firewall.service`, started at every boot)
+* switches on the login times check (`blighter-login.timer`, every minute; since 1.4.0)
 * sets the desktop proxy to 127.0.0.1:3128 and locks it
 * makes the Discord launcher (.deb or snap) use the proxy, if Discord is installed
 
@@ -190,7 +191,7 @@ administrator account** on the child's PC, not the child's account.
 
 1. Install the parent app on your own PC first (section 1). The installer's
    first page asks you to confirm this.
-2. Copy `BlighterChild-Setup-1.3.0.exe` to the child's PC.
+2. Copy `BlighterChild-Setup-1.4.0.exe` to the child's PC.
 3. Double-click the setup exe and follow the directions.
 4. It may take a while on some steps, do not give up unless sure it's failed.
 5. Pick the child's account from the list, then
@@ -396,11 +397,21 @@ Notes for Windows:
     in red, and the Filters tab says its filters are not in force. If it was
     set at the PC (see *Blighter Open All.cmd* below, or
     `sudo blighter-apply open local` on Ubuntu) the tab says so.
+  * **Login times** (since 1.4.0) - up to two allowed periods for each day.
+    Outside them the child's account is locked (no new logins); a child who
+    is logged in gets warnings (15 and 5 minutes, 5 only, or none) and is
+    then logged out, or the PC shuts down. **Extra time** allows logging in
+    until a chosen time today and ends by itself. The PC enforces it on its
+    own, so it works with the parent app closed. Only the child's account
+    is locked, and the PC refuses login times if that account is an
+    administrator. Ubuntu shows "Your account has expired" at a locked
+    login; Windows shows that the account has time restrictions.
   * **Log child out**, **Restart PC**, **Shut down PC** - each asks first,
-    then happens straight away (a restart or shutdown 5 seconds later). The
-    child is **not warned**, and anything unsaved is lost. Logging out does
-    not stop the child logging back in.
-  * Every child PC needs Blighter child 1.3.0 for this tab.
+    then happens straight away, or after a warning on the child's screen at
+    5 minutes, or at 15 and 5 minutes. A waiting one can be cancelled.
+    Logging out does not stop the child logging back in unless login times
+    lock the account.
+  * Every child PC needs Blighter child 1.4.0 for this tab.
 * While the app waits for a PC, the status bar shows **Working…** with a
   moving bar, and that tab's buttons are greyed out. Windows PCs take a
   few seconds per request; Ubuntu PCs answer almost at once.
@@ -461,6 +472,8 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `common/domains.py` | Domain validation and the Discord switch rules, shared by the app and the PC helpers |
 | `common/blockpage.py` | The neutral error page and Squid header settings, shared by both PC helpers |
 | `common/logtail.py` | Reads the activity log a piece at a time (only new lines), shared by both PC helpers |
+| `common/lockout.py` | Login times, warnings and warned actions (since 1.4.0), shared by the app and both PC helpers |
+| `tests/` | Login times tests (`python3 -m unittest discover -s tests -p "test_lockout.py"`) and the Find PCs test |
 | `parent/blighter_parent/` | The GUI app (Qt / PySide6, Paramiko SSH, keyring) |
 | `parent/packaging/` | Ubuntu launcher, menu entry and package control file |
 | `child/files/usr/sbin/blighter-setup` | One-time PC setup / removal |
@@ -469,6 +482,7 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `child/files/usr/share/blighter-child/squid.conf` | Managed Squid configuration |
 | `child-windows/blighter-setup.ps1` | Windows PC setup / removal |
 | `child-windows/blighter-system.ps1` | Windows whole-PC firewall, proxy policies, self-repair task |
+| `child-windows/blighter-warning.ps1` | Windows: the warning box shown in the child's session (since 1.4.0) |
 | `child-windows/blighter-apply.py` / `.cmd` | Windows helper the app runs over SSH (same commands as Ubuntu's) |
 | `child-windows/squid.conf` | Managed Squid configuration for Squid for Windows |
 | `child-windows/blighter-details.ps1` | Windows: connection details, repair and password change for a parent |
