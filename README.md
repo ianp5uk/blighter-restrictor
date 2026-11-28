@@ -5,7 +5,7 @@ component (Ubuntu or Windows PCs), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.2.6
+# Blighter Restrictor 1.2.7
 
 Monitor and restrict your children's web access on their Linux or
 Windows 10/11 PCs.
@@ -112,7 +112,8 @@ will be done if there is sufficient interest.
   filter).
 * **Discord** has its own per-child switch, *Allow Discord* (Rules tab). It
   covers Discord's web addresses and, for voice and video calls, outgoing
-  UDP 50000-65535. It wins over both lists. Note: while Discord is allowed,
+  UDP 50000-65535 plus secure connections to Discord's voice servers
+  (`*.discord.media`) on port 2053, through Squid. It wins over both lists. Note: while Discord is allowed,
   that UDP range is open to **any** program, so a child who is an
   administrator could run a VPN on a port in that range. For tight control,
   make the child a standard user, or switch Discord off.
@@ -127,10 +128,10 @@ will be done if there is sufficient interest.
 
 ## 1. Install the parent app (first)
 
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.6_all.deb`, then start
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.7_all.deb`, then start
 *Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
 
-**Windows:** run `BlighterRestrictor-Setup-1.2.6.exe` (see "Building for
+**Windows:** run `BlighterRestrictor-Setup-1.2.7.exe` (see "Building for
 Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
 click *More info → Run anyway*.
 
@@ -143,7 +144,7 @@ should ideally **not** be an administrator. The builds targeted Debian
 style Linux and have been tested on Ubuntu 26.04
 
 ```bash
-sudo apt install ./blighter-child_1.2.6_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.2.7_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
@@ -187,7 +188,7 @@ administrator account** on the child's PC, not the child's account.
 
 1. Install the parent app on your own PC first (section 1). The installer's
    first page asks you to confirm this.
-2. Copy `BlighterChild-Setup-1.2.6.exe` to the child's PC.
+2. Copy `BlighterChild-Setup-1.2.7.exe` to the child's PC.
 3. Double-click the setup exe and follow the directions.
 4. It may take a while on some steps, do not give up unless sure it's failed.
 5. Pick the child's account from the list, then

@@ -20,6 +20,10 @@
 # switches are applied with the lists.  Until the PC has answered, their
 # hover text says so (it only says "update" if the PC answered without
 # that setting).
+# Switching PCs: every read or apply is tagged with the PC and a sequence
+# number.  Selecting another PC starts a new sequence and clears "busy", so
+# a slow or offline PC can't leave the tab stuck; replies that arrive after
+# the switch are ignored for the tab (an apply's result is still reported).
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -74,6 +78,7 @@ class RulesTab(QWidget):
         self.home_supported = False
         self.home_name = self.loaded_home_name = ""
         self.busy = False
+        self._seq = 0       # bumped on every PC switch and every request
 
         self.rb_block = QRadioButton("Allow all, block some")
         self.rb_allow = QRadioButton("Block all, allow some")
@@ -274,8 +279,30 @@ class RulesTab(QWidget):
         self.loaded = self._current()
         self._changed()
 
+    # ---- requests -------------------------------------------------------------
+    def _begin(self):
+        """Start a request: mark busy and return its (child, sequence) tag."""
+        self._seq += 1
+        self.busy = True
+        return self.child, self._seq
+
+    def _current_tag(self, tag):
+        """True if a reply with this tag still belongs to what the tab shows."""
+        return tag[0] is self.child and tag[1] == self._seq
+
+    def _end(self, tag):
+        """Finish a request: clear busy unless a newer one has started."""
+        if self._current_tag(tag):
+            self.busy = False
+            return True
+        return False
+
     # ---- public -------------------------------------------------------------------
     def set_child(self, child):
+        # New sequence: any request still running for the previous PC is
+        # ignored when it answers, and can't keep the tab busy.
+        self._seq += 1
+        self.busy = False
         self.child = child
         self.loaded = None
         self._fill(domains.MODE_BLOCKLIST, [], [], answered=False)
@@ -288,12 +315,11 @@ class RulesTab(QWidget):
         if not self.child or self.busy:
             return
         child = self.child
-        self.busy = True
+        tag = self._begin()
         self.status.emit(f"Reading rules from {child.name}'s PC…")
 
         def ok(data):
-            self.busy = False
-            if child is not self.child:
+            if not self._end(tag):
                 return
             self._fill(data.get("mode"), data.get("allow", []), data.get("block", []), data.get("discord"),
                        data.get("home_net"), data.get("opera"))
@@ -301,13 +327,14 @@ class RulesTab(QWidget):
             self.status.emit(f"Rules loaded from {child.name}'s PC.")
 
         def err(msg):
-            self.busy = False
+            if not self._end(tag):
+                return
             self.status.emit(msg)
-            if child is self.child:
-                self.issues.clear()
-                self.issues.addItem("ERROR " + msg)
-                if self.loaded is None:
-                    self._set_tips(FAIL_TIP, FAIL_TIP, FAIL_TIP)
+            self.issues.clear()
+            self.issues.addItem("ERROR " + msg)
+            self.btn_reload.setEnabled(True)    # so 'Reload from PC' can try again
+            if self.loaded is None:
+                self._set_tips(FAIL_TIP, FAIL_TIP, FAIL_TIP)
 
         run_bg(lambda: self.remotes.get(child).get(), ok, err)
 
@@ -356,15 +383,16 @@ class RulesTab(QWidget):
             home = {"allowed": self.cb_home.isChecked(),
                     "subnets": self.home_edit.text().replace(",", " ").split(),
                     "name": self.home_name}
-        self.busy = True
+        tag = self._begin()
         self._set_enabled(False)
         self.status.emit(f"Applying rules to {child.name}'s PC…")
 
         def ok(res):
-            self.busy = False
-            self._set_enabled(True)
+            mine = self._end(tag)
+            if mine:
+                self._set_enabled(True)
             if res.get("ok"):
-                if child is self.child:
+                if mine:
                     self._fill(res.get("mode"), res.get("allow", []), res.get("block", []),
                                res.get("discord", discord), res.get("home_net", home),
                                res.get("opera", opera))
@@ -377,9 +405,9 @@ class RulesTab(QWidget):
                 self.status.emit(f"{child.name}: {res.get('message')}")
 
         def err(msg):
-            self.busy = False
-            self._set_enabled(True)
-            QMessageBox.critical(self, "Could not apply", msg)
+            if self._end(tag):
+                self._set_enabled(True)
+            QMessageBox.critical(self, "Could not apply", f"{child.name}: {msg}")
             self.status.emit(msg)
 
         run_bg(lambda: self.remotes.get(child).apply(mode, allow, block, discord, home, opera), ok, err)
@@ -392,15 +420,14 @@ class RulesTab(QWidget):
         if not self.child or self.busy:
             return
         child = self.child
-        self.busy = True
+        tag = self._begin()
         self._set_enabled(False)
         self.status.emit(f"Asking {child.name}'s PC which network it is on…")
 
         def ok(res):
-            self.busy = False
-            self._set_enabled(True)
-            if child is not self.child:
+            if not self._end(tag):
                 return
+            self._set_enabled(True)
             nets = res.get("networks", [])
             private = [n for n in nets if n.get("private")]
             pick = private or nets
@@ -420,7 +447,8 @@ class RulesTab(QWidget):
                              + " - press 'Apply to PC' to use it.")
 
         def err(msg):
-            self.busy = False
+            if not self._end(tag):
+                return
             self._set_enabled(True)
             self.status.emit(msg)
 

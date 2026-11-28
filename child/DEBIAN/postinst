@@ -1,7 +1,9 @@
 #!/bin/sh
 # Blighter Restrictor child package - post-install message.
 # Purpose: reload systemd units and tell the parent how to finish setup;
-# on an upgrade, re-apply the firewall and rewrite the Squid rules.
+# on an upgrade, re-apply the firewall, put this version's squid.conf in
+# place (only if the current one is Blighter's own) and rewrite the Squid
+# rules.
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This program is free software: you can redistribute it and/or modify it
@@ -15,6 +17,22 @@ if [ "$1" = "configure" ]; then
     if [ -f /etc/blighter/child.conf ]; then
         # Upgrade: re-apply firewall with the new script.
         if [ -d /run/systemd/system ]; then systemctl try-restart blighter-firewall.service || true; fi
+        # This version's squid.conf (e.g. 1.2.7's Discord voice port), but
+        # only over Blighter's own file; if Squid rejects it the old one is
+        # put back.
+        conf=/etc/squid/squid.conf
+        tmpl=/usr/share/blighter-child/squid.conf
+        if [ -f "$conf" ] && [ -f "$tmpl" ] && head -5 "$conf" | grep -q "Blighter Restrictor" \
+           && ! cmp -s "$conf" "$tmpl"; then
+            cp -a "$conf" "$conf.blighter-upgrade"
+            install -m 644 "$tmpl" "$conf"
+            if squid -k parse -f "$conf" >/dev/null 2>&1; then
+                rm -f "$conf.blighter-upgrade"
+            else
+                mv -f "$conf.blighter-upgrade" "$conf"
+                echo "Blighter: the new squid.conf was rejected by Squid - kept the previous one."
+            fi
+        fi
         # Rewrite the Squid rules with this version's settings (e.g. the
         # neutral error pages) and reload Squid; the lists are kept.
         /usr/sbin/blighter-apply reload >/dev/null 2>&1 || true

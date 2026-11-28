@@ -12,6 +12,8 @@
 ; blighter-setup.ps1 -Remove -Yes).
 ; The first page warns that the parent app must be installed on the
 ; parent's own PC FIRST and asks for confirmation before going on.
+; Answering "No" closes setup at once with nothing changed (since 1.2.7 it
+; no longer asks "Exit Setup?" first, which could lead back to the warning).
 ; There are deliberately no Start menu or desktop shortcuts (since 1.2.6), so
 ; nothing catches the child's eye.  The parent's tools are in
 ; C:\ProgramData\BlighterChild: Blighter-Details.cmd (the address for the
@@ -113,6 +115,10 @@ var
   Progress: TOutputProgressWizardPage;
   LastError, ResultIp, ResultChild, Notes, LogFile: String;
   FailedUndo, FailedRerun, SquidUpdated, SetupOk: Boolean;
+  { Set when the user chose to stop: closing then skips Inno's "Exit Setup?"
+    question, so choosing "No" there can't send them back to the warning. }
+  QuitNow: Boolean;
+  ParentConfirmed: Boolean;   { asked once: Back then Next doesn't ask again }
   StepNo: Integer;
 
 function SetEnvironmentVariable(lpName: String; lpValue: String): Boolean;
@@ -427,16 +433,25 @@ begin
     BLIGHTER_ADMIN_PASSWORD variable); the page checks would show message
     boxes nobody can see. }
   if WizardSilent then Exit;
-  if CurPageID = wpWelcome then begin
+  { Already told to stop: never show the warning again, just close. }
+  if QuitNow then begin
+    WizardForm.Close;
+    Result := False;
+    Exit;
+  end;
+  if (CurPageID = wpWelcome) and not ParentConfirmed then begin
     if MsgBox('Have you already installed the Blighter Restrictor app on your OWN PC?' + #13#10#13#10 +
       'This installer is for the child''s PC.  You need the parent app to finish connecting to it and to manage it.' + #13#10#13#10 +
       'Yes - the parent app is installed, continue' + #13#10 +
       'No - stop now and install the parent app first', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then begin
       MsgBox('Setup will now close.  Nothing has been changed.' + #13#10#13#10 +
         'Install Blighter Restrictor on your own PC first, then run this installer again.', mbInformation, MB_OK);
+      QuitNow := True;
       WizardForm.Close;
       Result := False;
-    end;
+    end
+    else
+      ParentConfirmed := True;
   end
   else if CurPageID = AccountPage.ID then begin
     if AccountCombo.ItemIndex < 0 then begin
@@ -462,6 +477,7 @@ begin
   else if CurPageID = SquidPage.ID then begin
     if not ReplaceRadio.Checked then begin
       MsgBox('Setup will now close.  Nothing has been changed.', mbInformation, MB_OK);
+      QuitNow := True;
       WizardForm.Close;
       Result := False;
     end;
@@ -470,7 +486,13 @@ end;
 
 procedure CancelButtonClick(CurPageID: Integer; var Cancel, Confirm: Boolean);
 begin
-  if (CurPageID = SquidPage.ID) and CancelRadio.Checked then Confirm := False;
+  { Nothing has been changed before the setup script runs, so stopping is
+    always safe: exit straight away when the user already said so. }
+  if QuitNow then begin
+    Cancel := True;
+    Confirm := False;
+  end
+  else if (CurPageID = SquidPage.ID) and CancelRadio.Checked then Confirm := False;
 end;
 
 function ChosenChild: String;

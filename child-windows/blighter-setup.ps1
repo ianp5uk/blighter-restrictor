@@ -92,7 +92,7 @@ $ErrorActionPreference = "Stop"
 # Progress bars are hidden (they flash on and off and look like a fault);
 # slow steps print their own "still working" lines instead.
 $ProgressPreference    = "SilentlyContinue"
-$Version   = "1.2.6"
+$Version   = "1.2.7"
 $Admin     = "blighter"
 $Dest      = Join-Path $env:ProgramData "BlighterChild"
 $Src       = Split-Path -Parent $MyInvocation.MyCommand.Path
