@@ -285,11 +285,22 @@ class Remote:
             data["home_net"] = home_net
         return self._json(["set"], json.dumps(data))
 
-    def pause(self):
-        return self._json_t(["pause"], 300)
+    def set_control(self, state):
+        """The Controls tab's switch: "filtered", "block" or "open" (1.3.0+)."""
+        if state not in ("filtered", "block", "open"):
+            raise ValueError(state)
+        return self._json_t([state], 300)
 
-    def resume(self):
-        return self._json_t(["resume"], 300)
+    def log_child_out(self):
+        return self._json_t(["logout"], 90)
+
+    def power(self, action):
+        """shutdown or restart (the PC does it 5 seconds after replying)."""
+        if action not in ("shutdown", "restart"):
+            raise ValueError(action)
+        res = self._json_t([action], 90)
+        self.close()          # the PC is about to go away
+        return res
 
     def netinfo(self):
         return self._json_t(["netinfo"], 90)
@@ -301,7 +312,7 @@ class Remote:
         except ValueError:
             if "usage" in (err + out).lower():
                 raise RemoteError("This PC's Blighter child version is too old for this - "
-                                  "update it to 1.2.3 or later.")
+                                  "update it to 1.3.0.")
             raise RemoteError(f"Unexpected reply from the PC (exit {code}): {(err or out)[:800]}")
 
     def reload(self):

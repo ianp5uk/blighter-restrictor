@@ -5,14 +5,15 @@ component (Ubuntu or Windows PCs), day-to-day use, limits, and how to
 build the packages (Linux and Windows).
 -->
 
-# Blighter Restrictor 1.2.9
+# Blighter Restrictor 1.3.0
 
 Monitor and restrict your children's web access on their Linux or
 Windows 10/11 PCs.
 The parent app (Linux or Windows) logs in to each PC over the home network to
 change the rules and read the activity log. You can block everything and allow a
-few web sites or the oposite, allow all and block a few. You can pause the
-restrictions. 
+few web sites or the oposite, allow all and block a few. You can lift the
+restrictions (Open all) or block everything (Block all) with one click, and log
+the child out or shut their PC down. 
 
 ![Blighter Restrictor Image](blighter-restrictor.png "Blighter Restrictor")
 
@@ -129,10 +130,10 @@ will be done if there is sufficient interest.
 
 ## 1. Install the parent app (first)
 
-**Ubuntu:** `sudo apt install ./blighter-restrictor_1.2.9_all.deb`, then start
+**Ubuntu:** `sudo apt install ./blighter-restrictor_1.3.0_all.deb`, then start
 *Blighter Restrictor* from the app menu (or run `blighter-restrictor`).
 
-**Windows:** run `BlighterRestrictor-Setup-1.2.9.exe` (see "Building for
+**Windows:** run `BlighterRestrictor-Setup-1.3.0.exe` (see "Building for
 Windows" below). It isn't signed, so Windows SmartScreen shows a warning:
 click *More info → Run anyway*.
 
@@ -145,7 +146,7 @@ should ideally **not** be an administrator. The builds targeted Debian
 style Linux and have been tested on Ubuntu 26.04
 
 ```bash
-sudo apt install ./blighter-child_1.2.9_all.deb     # also installs squid, openssh-server, nftables if missing
+sudo apt install ./blighter-child_1.3.0_all.deb     # also installs squid, openssh-server, nftables if missing
 sudo blighter-setup <child-username>                # e.g. sudo blighter-setup tom
 ```
 
@@ -189,7 +190,7 @@ administrator account** on the child's PC, not the child's account.
 
 1. Install the parent app on your own PC first (section 1). The installer's
    first page asks you to confirm this.
-2. Copy `BlighterChild-Setup-1.2.9.exe` to the child's PC.
+2. Copy `BlighterChild-Setup-1.3.0.exe` to the child's PC.
 3. Double-click the setup exe and follow the directions.
 4. It may take a while on some steps, do not give up unless sure it's failed.
 5. Pick the child's account from the list, then
@@ -280,14 +281,20 @@ Notes for Windows:
   current address for the parent app, can check and repair the connection
   (OpenSSH, Squid, the SSH firewall rule, the network type) and change the
   `blighter` password. The PC's SSH identity (host keys) is never replaced.
-* **Pause Blighter Child.cmd** (in `C:\ProgramData\BlighterChild`) switches
-  Blighter **completely** off without uninstalling, for troubleshooting. The
-  firewall, browser policies and the child's proxy go back to how they were
-  before setup, and the self-repair task is switched off, so **no activity is
-  recorded** while it is off. The parent app can still connect; its PC tab
-  says Blighter is switched off on the PC, and its *Resume filtering* switches
-  it back on (as does **Resume Blighter Child.cmd**). This is different from
-  the parent app's *Pause filtering*, which keeps recording.
+* **Blighter Open All.cmd** (in `C:\ProgramData\BlighterChild`, asks for
+  administrator rights) is the Controls tab's *Open all*, set at the PC:
+  every website and Discord are allowed, **activity is still recorded**, and
+  the parent app shows "set on the PC itself". **Blighter Filtered.cmd** puts
+  the filters back. (They replace 1.2.x's *Pause* / *Resume Blighter
+  Child.cmd*; Pause switched Blighter off and stopped recording.)
+* For troubleshooting only, an administrator can still switch Blighter
+  **completely** off without uninstalling, from an administrator PowerShell:
+  `powershell -ExecutionPolicy Bypass -File C:\ProgramData\BlighterChild\blighter-system.ps1 off`.
+  The firewall, browser policies and the child's proxy go back to how they
+  were before setup, so **no activity is recorded**. The parent app can still
+  connect and shows a red notice; choosing any setting on its Controls tab
+  (or *Blighter Filtered.cmd*, or `... blighter-system.ps1 on`) switches it
+  back on. There is deliberately no double-click file for this.
 * **Remove Blighter Child.cmd** (from the zip or from
   `C:\ProgramData\BlighterChild`) puts the PC back as it was before setup:
   * firewall defaults, the switched-off rules, browser policies and the child's
@@ -353,8 +360,8 @@ Notes for Windows:
 * **Activity tab:** the PC's Squid log, newest first, with filters (time,
   site, blocked only) and a *Summary by site* view. Activity is **collected
   automatically in the background** (every 10 seconds) for every child the app
-  is logged in to - whichever child or tab is shown, and also while filtering
-  is paused - until you log out of that child or close the app. Only new log
+  is logged in to - whichever child or tab is shown, and also under Block all
+  and Open all - until you log out of that child or close the app. Only new log
   lines are fetched each time. *First fetch: last N lines* (100 by default)
   sets how much history is fetched when collection starts; *Load history*
   (with *Include older logs* if wanted) fetches more and adds it without
@@ -376,13 +383,24 @@ Notes for Windows:
   The settings appear straight away; the health checks follow (a few
   seconds; on Windows up to a minute). *Reload Squid* rewrites the generated
   rules and re-reads the configuration on demand.
-  **Pause filtering** allows every website on that PC, and **Resume
-  filtering** switches the rules back on. While paused the PC tab shows a red
-  banner and the children list shows "- PAUSED" in red. **Activity is still
-  recorded while paused**: web traffic still has to go through Squid (the
-  firewall and proxy settings stay on), Squid just lets everything through.
-  This lasts across restarts until Resume. PCs with a child version older
-  than 1.2.6 stop recording while paused; the app warns before pausing them.
+  *Mode in force* also shows Block all or Open all when one is on.
+* **Controls tab** (since 1.3.0, replacing *Pause* / *Resume filtering*):
+  * **Filtered / Block all / Open all** - takes effect as soon as you click.
+    *Filtered* uses the Filters tab. *Block all* blocks every website and
+    Discord (including Discord voice); the home network stays as its own
+    switch says, and the parent app can always reach the PC. *Open all*
+    allows every website and Discord. The filters are kept whatever you
+    choose, and **activity is recorded in all three**: web traffic always
+    goes through Squid (the firewall and proxy settings stay on). It lasts
+    across restarts. The children list shows "- BLOCK ALL" or "- OPEN ALL"
+    in red, and the Filters tab says its filters are not in force. If it was
+    set at the PC (see *Blighter Open All.cmd* below, or
+    `sudo blighter-apply open local` on Ubuntu) the tab says so.
+  * **Log child out**, **Restart PC**, **Shut down PC** - each asks first,
+    then happens straight away (a restart or shutdown 5 seconds later). The
+    child is **not warned**, and anything unsaved is lost. Logging out does
+    not stop the child logging back in.
+  * Every child PC needs Blighter child 1.3.0 for this tab.
 * While the app waits for a PC, the status bar shows **Working…** with a
   moving bar, and that tab's buttons are greyed out. Windows PCs take a
   few seconds per request; Ubuntu PCs answer almost at once.
@@ -454,7 +472,7 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `child-windows/blighter-apply.py` / `.cmd` | Windows helper the app runs over SSH (same commands as Ubuntu's) |
 | `child-windows/squid.conf` | Managed Squid configuration for Squid for Windows |
 | `child-windows/blighter-details.ps1` | Windows: connection details, repair and password change for a parent |
-| `child-windows/*.cmd` | Double-click install / pause / resume / remove / details (Blighter-Details.cmd) |
+| `child-windows/*.cmd` | Double-click install / Open All / Filtered / remove / details (Blighter-Details.cmd) |
 | `build-windows-child.sh` | Builds the Windows child zip |
 | `windows/` | Windows build script, installer definition, icon (parent app) |
 | `LICENSE` | GNU General Public License v3.0 |

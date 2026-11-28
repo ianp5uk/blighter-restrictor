@@ -68,7 +68,7 @@ Windows child package bundles the python.org embeddable Python (PSF License).
 | `child-windows/blighter-apply.py` / `.cmd` | Windows helper the app runs over SSH (same commands as Ubuntu's) |
 | `child-windows/squid.conf` | Managed Squid configuration for Squid for Windows |
 | `child-windows/blighter-details.ps1` | Windows: connection details, repair and password change for a parent |
-| `child-windows/*.cmd` | Double-click install / pause / resume / remove / details (Blighter-Details.cmd) |
+| `child-windows/*.cmd` | Double-click install / Open All / Filtered / remove / details (Blighter-Details.cmd) |
 | `build-windows-child.sh` | Builds the Windows child zip |
 | `windows/` | Windows build script, installer definition, icon (parent app) |
 | `LICENSE` | GNU General Public License v3.0 |

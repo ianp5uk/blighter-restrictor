@@ -6,7 +6,7 @@
 # range, text search, blocked-only.
 # The activity itself is collected in the background by collector.py, all
 # the time the app is logged in to that child's PC - whichever tab is open,
-# and also while filtering is paused.  This tab only shows it, and says when
+# and also under Block all and Open all (Controls tab).  This tab only shows it, and says when
 # it was last updated, or that it is out of date if the PC cannot be
 # reached (the app keeps retrying).  "First fetch: last N lines" (100 by
 # default) only limits the history fetched when collection starts; "Load
@@ -213,8 +213,9 @@ class ActivityTab(QWidget):
         else:
             text = f"Collecting {c.name}'s activity…"
         if a.bypassed:
-            notes.append(red.format(f"Blighter is switched off on {c.name}'s PC itself ('Pause Blighter Child'), "
-                                    "so no activity is being recorded.  Press Resume filtering on the PC tab."))
+            notes.append(red.format(f"Blighter is switched off on {c.name}'s PC itself (by an administrator, "
+                                    "for troubleshooting), so no activity is being recorded.  Choose a setting "
+                                    "on the Controls tab to switch it back on."))
         if a.legacy:
             notes.append(f"{c.name}'s PC has an older Blighter child (before 1.2.6): the app has to fetch "
                          "the latest lines again each time.  Update the PC to 1.2.6.")

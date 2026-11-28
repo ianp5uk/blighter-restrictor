@@ -7,13 +7,14 @@
 # /etc/blighter/child.conf).  For that user, outgoing traffic is allowed to:
 #   - this PC (loopback) - which is where Squid listens
 #   - DNS (port 53) and ping
-#   - UDP 50000-65535 when ALLOW_VOICE_UDP=yes (Discord voice/video)
+#   - UDP 50000-65535 (Discord voice/video) when ALLOW_VOICE_UDP=yes, or
+#     always under Open all, never under Block all (/etc/blighter/control,
+#     the parent app's Controls tab)
 #   - the home network (HOME_NETS) when HOME_NET_ALLOWED=yes - printers, NAS
 #     drives and so on; Blighter controls internet access only
-# The rules stay on while filtering is paused (/etc/blighter/paused, Pause
-# in the parent app): Squid then allows every site, but web traffic still
-# has to go through it, so activity is still recorded.  (Before 1.2.6 the
-# rules were removed while paused, which stopped monitoring too.)
+# The rules stay on under Block all and Open all too: Squid then blocks or
+# allows every site, but web traffic still has to go through it, so
+# activity is always recorded.
 # Everything else (direct web access, QUIC, game servers, VPNs...) is
 # rejected.  Squid itself runs as the "proxy" user, so it is unaffected.
 # Uses its own table "inet blighter" so it never touches other firewall rules.
@@ -30,14 +31,26 @@
 # -----------------------------------------------------------------------------
 set -euo pipefail
 CONF=/etc/blighter/child.conf
+CONTROL_FILE=/etc/blighter/control
 
 start() {
     [ -r "$CONF" ] || { echo "Missing $CONF - run blighter-setup first" >&2; exit 1; }
     # shellcheck disable=SC1090
     . "$CONF"
     CHILD_UID=$(id -u "$CHILD_USER")
+    CONTROL=filtered
+    if [ -r "$CONTROL_FILE" ]; then
+        read -r CONTROL _ < "$CONTROL_FILE" || true
+    elif [ -e /etc/blighter/paused ]; then
+        CONTROL=open                  # 1.2.x Pause, not migrated yet
+    fi
+    VOICE_ON="${ALLOW_VOICE_UDP:-yes}"
+    case "$CONTROL" in
+        open)  VOICE_ON=yes ;;
+        block) VOICE_ON=no ;;
+    esac
     VOICE=""
-    if [ "${ALLOW_VOICE_UDP:-yes}" = "yes" ]; then
+    if [ "$VOICE_ON" = "yes" ]; then
         VOICE="udp dport 50000-65535 accept comment \"Discord voice/video\""
     fi
     HOME4=""; HOME6=""

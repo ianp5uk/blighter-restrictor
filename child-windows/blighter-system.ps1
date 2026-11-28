@@ -9,7 +9,8 @@
 #   * Outgoing traffic is blocked by default on all network profiles.
 #   * Allowed out: squid.exe (the filter itself), Windows' own services
 #     (DNS, DHCP, time, Windows Update, Defender, network status check),
-#     ping, and - unless switched off - UDP 50000-65535 (Discord voice/video)
+#     ping, and - unless switched off - UDP 50000-65535 (Discord voice/video;
+#     always on under the parent app's Open all, never under Block all)
 #     and the home network (HOME_NETS in child.conf: printers, NAS drives...;
 #     Blighter controls internet access only).
 #   * Every other "allow outgoing" firewall rule (Store apps, games, Xbox...)
@@ -26,38 +27,41 @@
 # Before the first change, "capture" saves how the PC was set up
 # (state\pre-install.json: firewall defaults, browser proxy policies, the
 # child's own proxy setting, whether OpenSSH / Squid / the blighter account
-# already existed).  "pause" and "disable" put back exactly that.
+# already existed).  "off" and "disable" put back exactly that.
 #
 # Actions:
 #   capture   save the "before" state (only the first time; never overwritten)
 #   enable    apply everything above and create the scheduled tasks
 #   enforce   re-check and repair (run by the "Enforce" task every 10 minutes,
-#             at start-up and at every log-on, as SYSTEM); does nothing while paused
-#   pause     switch Blighter off but leave everything installed: firewall,
-#             browser policies and the child's proxy back to their "before"
-#             state, self-repair task switched off.  SSH from the home network
-#             keeps working so the parent app can still connect.  Used only
-#             by "Pause Blighter Child.cmd" on the PC itself, for
-#             troubleshooting: activity is NOT recorded while it is on.  (The
-#             parent app's Pause is different - it only makes Squid allow
-#             every site, see blighter-apply.py - so monitoring continues.)
-#   resume    switch filtering back on after "pause"
+#             at start-up and at every log-on, as SYSTEM); does nothing while off
+#   off       switch Blighter off completely but leave everything installed:
+#             firewall, browser policies and the child's proxy back to their
+#             "before" state, self-repair task switched off.  SSH from the
+#             home network keeps working so the parent app can still connect.
+#             For an administrator troubleshooting on the PC itself (there is
+#             deliberately no .cmd file for it since 1.3.0): activity is NOT
+#             recorded while it is off.  (The parent app's Open all, and
+#             "Blighter Open All.cmd", are different - they only make Squid
+#             allow every site, see blighter-apply.py - so monitoring
+#             continues.)
+#   on        switch Blighter back on after "off" (the parent app's Controls
+#             tab, or either local .cmd, does this too)
 #   disable   undo everything this script did (used by blighter-setup.ps1 -Remove)
 #   options   add, change or remove the Discord voice rule (UDP 50000-65535)
 #             and the home network rule to match child.conf (run by
-#             blighter-apply.py when the parent app's switches change; nothing
-#             while paused).  "voice" is the 1.2.2 name for the same thing.
+#             blighter-apply.py when the parent app's switches or the Controls
+#             tab change; nothing while off).  "voice" is the 1.2.2 name for the same thing.
 #   netinfo   JSON list of this PC's current networks (adapters with a
 #             default route): address, prefix length and network name
 #   repair    check and repair what the parent app needs to connect: the
 #             OpenSSH and Squid services, the SSH firewall rule and (unless
-#             switched off with pause) the rest of the firewall.  Existing SSH
+#             switched off with "off") the rest of the firewall.  Existing SSH
 #             host keys are never replaced; OpenSSH only creates keys that
 #             are missing.  Used by Blighter-Details.cmd.
 #   status    print a JSON summary (used by blighter-apply.py "status")
 #
 # Usage (as administrator):
-#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|pause|resume|disable|options|netinfo|repair|status
+#   powershell -ExecutionPolicy Bypass -File blighter-system.ps1 capture|enable|enforce|off|on|disable|options|netinfo|repair|status
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -67,7 +71,7 @@
 # any later version.  It is distributed WITHOUT ANY WARRANTY; see the
 # LICENSE file or <https://www.gnu.org/licenses/> for details.
 # -----------------------------------------------------------------------------
-param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "pause", "resume", "disable", "options", "voice", "netinfo", "repair", "status")][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet("capture", "enable", "enforce", "off", "on", "disable", "options", "voice", "netinfo", "repair", "status")][string]$Action)
 
 $ErrorActionPreference = "Stop"
 # No progress bars: each firewall cmdlet would otherwise flash one, which is
@@ -78,7 +82,9 @@ $ChildConf  = Join-Path $Here "child.conf"
 $StateDir   = Join-Path $Here "state"
 $DisabledDb = Join-Path $StateDir "disabled-rules.txt"
 $PreFile    = Join-Path $StateDir "pre-install.json"
-$PausedFlag = Join-Path $StateDir "paused"
+$OffFlag    = Join-Path $StateDir "off"        # switched off completely ("off")
+$LegacyOff  = Join-Path $StateDir "paused"     # 1.2.x "Pause Blighter Child.cmd"
+$ControlFile = Join-Path $StateDir "control"   # the parent app's Controls tab: filtered / block / open
 $Incomplete = Join-Path $StateDir "setup-incomplete.txt"
 $SshRuleWin = "OpenSSH-Server-In-TCP"
 $Group      = "Blighter Restrictor"
@@ -294,7 +300,7 @@ function Disable-Firewall($pre) {
 # -------------------------------------------------------------------- proxy ---
 # Chromium-based browsers: the same ProxySettings policy under each one's own
 # key.  (Brave and Vivaldi were added in 1.2.4; on PCs set up earlier
-# pre-install.json has no "before" value for them, so pause / removal simply
+# pre-install.json has no "before" value for them, so "off" / removal simply
 # deletes them.)
 $PolicyKeys = @{
     "HKLM:\SOFTWARE\Policies\Microsoft\Edge"         = "ProxySettings"
@@ -553,7 +559,14 @@ function Confirm-Services {
 
 # ----------------------------------------------------------------- actions ---
 $conf  = Read-ChildConf
-$voice = $conf.ALLOW_VOICE_UDP -ne "no"
+# Discord voice/video: its switch under Filtered, always under Open all,
+# never under Block all (the Controls tab, written by blighter-apply.py).
+$control = "filtered"
+if (Test-Path $ControlFile) { $control = ("$(Get-Content $ControlFile -TotalCount 1)" -split '\s+')[0] }
+elseif (Test-Path (Join-Path $StateDir "open")) { $control = "open" }   # 1.2.x Pause, not migrated yet
+$voice = switch ($control) { "open" { $true } "block" { $false } default { $conf.ALLOW_VOICE_UDP -ne "no" } }
+function Test-Off { return (Test-Path $OffFlag) -or (Test-Path $LegacyOff) }
+function Clear-Off { Remove-Item $OffFlag, $LegacyOff -Force -ErrorAction SilentlyContinue }
 # Home network subnets, only while the switch is on (checked again by the helper).
 # The recorded home subnets are also used for the SSH rule, switch on or off.
 $RecordedNets = @("$($conf.HOME_NETS)" -split '\s+' | Where-Object { $_ -match '^[0-9a-fA-F:.]+(/\d{1,3})?$' })
@@ -586,25 +599,25 @@ switch ($Action) {
     }
     "enable" {
         if (-not (Test-Path $PreFile)) { Save-PreState $conf }
-        Remove-Item $PausedFlag -Force -ErrorAction SilentlyContinue
+        Clear-Off
         Start-Filtering
         Write-BLog "Blighter firewall and proxy enabled."
     }
-    "resume" {
-        Remove-Item $PausedFlag -Force -ErrorAction SilentlyContinue
+    "on" {
+        Clear-Off
         Start-Filtering
-        Write-BLog "Filtering RESUMED."
+        Write-BLog "Blighter switched back ON."
     }
-    "pause" {
+    "off" {
         $pre = Read-PreState
         if (-not $pre) { Write-BLog "WARNING: no saved 'before' state - using Windows defaults." }
         Get-ScheduledTask -TaskPath $TaskPath -TaskName "Enforce" -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
         Stop-Filtering $pre
-        Set-Content -Path $PausedFlag -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        Write-BLog "Filtering PAUSED (run resume to switch it back on)."
+        Set-Content -Path $OffFlag -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        Write-BLog "Blighter switched OFF - nothing is filtered or recorded (run 'on', or choose a setting on the parent app's Controls tab, to switch it back on)."
     }
     "enforce" {
-        if (Test-Path $PausedFlag) { return }
+        if (Test-Off) { return }
         # Each check is separate so one failure does not stop the others.
         try {
             $problems = Test-FirewallOk $voice
@@ -621,9 +634,9 @@ switch ($Action) {
         try { Confirm-Services } catch { Write-BLog "ERROR (services): $($_.Exception.Message)" }
     }
     { $_ -in "options", "voice" } {
-        # SSH stays on while paused, so its addresses follow the settings now.
+        # SSH stays on while switched off, so its addresses follow the settings now.
         try { Update-SshAddresses } catch { Write-BLog "ERROR (SSH rule): $($_.Exception.Message)" }
-        if (Test-Path $PausedFlag) { Write-BLog "Settings saved; they take effect when filtering is resumed."; return }
+        if (Test-Off) { Write-BLog "Settings saved; they take effect when Blighter is switched back on."; return }
         $wanted = @(Get-WantedRules $voice)
         foreach ($n in "BR-Voice", "BR-HomeNet") {
             $r = $wanted | Where-Object { $_.Name -eq $n }
@@ -654,7 +667,7 @@ switch ($Action) {
             $r = Get-NetFirewallRule -Name "BR-SSH-In" -ErrorAction SilentlyContinue
             if ($r -and "$($r.Enabled)" -ne "True") { Enable-NetFirewallRule -Name "BR-SSH-In"; Write-BLog "SSH firewall rule switched back on." }
         } catch { Write-BLog "ERROR (SSH rule): $($_.Exception.Message)" }
-        if (-not (Test-Path $PausedFlag)) {
+        if (-not (Test-Off)) {
             try {
                 $problems = Test-FirewallOk $voice
                 if ($problems.Count) { Write-BLog ("Repairing: " + ($problems -join " | ")); Enable-Firewall $voice $false }
@@ -669,15 +682,18 @@ switch ($Action) {
         Disable-Firewall $pre
         Restore-ProxyPolicies $pre
         Set-ChildProxy $conf.CHILD_SID $false $pre | Out-Null
-        Remove-Item $PausedFlag -Force -ErrorAction SilentlyContinue
+        Clear-Off
         Write-BLog "Blighter firewall and proxy removed; previous settings restored."
     }
     "status" {
         $ErrorActionPreference = "Continue"
-        $paused = Test-Path $PausedFlag
+        $off = Test-Off
         $all = Get-AllRules
         $problems = Test-FirewallOk $voice $all
-        if ($paused) { $problems = @("Blighter is SWITCHED OFF on this PC ('Pause Blighter Child', since " + (Get-Content $PausedFlag -TotalCount 1) + ") - nothing is filtered or recorded") + $problems }
+        if ($off) {
+            $since = if (Test-Path $OffFlag) { Get-Content $OffFlag -TotalCount 1 } else { Get-Content $LegacyOff -TotalCount 1 }
+            $problems = @("Blighter is SWITCHED OFF on this PC (by an administrator on the PC, since $since) - nothing is filtered or recorded") + $problems
+        }
         $warnings = @()
         if (Test-Path $Incomplete) {
             $warnings += ("Setup on this PC did not finish (started " + (Get-Content $Incomplete -TotalCount 1) +
@@ -727,7 +743,7 @@ switch ($Action) {
         if ($problems.Count) { $lines += ""; $lines += "Problems:"; $problems | ForEach-Object { $lines += "  $_" } }
         $osv = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue)
         [pscustomobject]@{
-            paused          = $paused
+            off             = $off
             firewall_active = ($problems.Count -eq 0)
             firewall_rules  = ($lines -join "`n")
             proxy_locked    = (Test-ProxyPolicies)

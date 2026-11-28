@@ -27,13 +27,22 @@
 #                       with these without fetching lines twice
 #   init                (used by blighter-setup.ps1) create default files
 #   netinfo             the networks the PC is on now (for the home network setting)
-#   pause / resume      all websites allowed / filtering back on (the parent
-#                       app's Pause).  Since 1.2.6 this only changes Squid's
-#                       rules (state\open): the firewall and proxy settings
-#                       stay on, so activity is still recorded.  The local
-#                       "Pause Blighter Child.cmd" is different: it switches
-#                       Blighter off completely (state\paused, monitoring
-#                       stops too) for troubleshooting.  "resume" ends both.
+#   filtered|block|open [local]
+#                       the Controls tab's three-way switch (since 1.3.0):
+#                       the filters apply / every site and Discord blocked
+#                       (home network as its switch says) / every site and
+#                       Discord allowed.  The filters themselves are kept,
+#                       and the firewall and proxy settings stay on, so
+#                       activity is always recorded.  "local" records that
+#                       it was set on the PC itself ("Blighter Open All.cmd"
+#                       / "Blighter Filtered.cmd") rather than by the parent
+#                       app.  Any of the three also switches Blighter back on
+#                       if an administrator switched it off completely for
+#                       troubleshooting (blighter-system.ps1 off).  Replaces
+#                       1.2.x's pause / resume.
+#   logout              log the child's account out (unsaved work is lost)
+#   shutdown / restart  switch the PC off / restart it, 5 seconds after
+#                       replying (so the parent app gets the answer)
 #
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -59,14 +68,16 @@ import domains  # noqa: E402  (shared validation, same file as the parent app)
 import blockpage  # noqa: E402  (neutral error pages, same file as the Ubuntu helper)
 import logtail  # noqa: E402  (incremental log reading, same file as the Ubuntu helper)
 
-VERSION = "1.2.9"
+VERSION = "1.3.0"
 PLATFORM = "windows"
 SERVICE = "squidsrv"            # service name used by Diladele's installer
 CHILD_CONF = os.path.join(HERE, "child.conf")
 SYSTEM_PS1 = os.path.join(HERE, "blighter-system.ps1")
 STATE_DIR = os.path.join(HERE, "state")
-PAUSED_FLAG = os.path.join(STATE_DIR, "paused")   # switched off on the PC itself (Pause .cmd)
-OPEN_FLAG = os.path.join(STATE_DIR, "open")       # parent app's Pause: all sites allowed, still logged
+CONTROL_FILE = os.path.join(STATE_DIR, "control")  # "open parent 2026-11-28 14:32:00"; missing = filtered
+OFF_FLAG = os.path.join(STATE_DIR, "off")          # switched off completely (blighter-system.ps1 off)
+LEGACY_PAUSED = os.path.join(STATE_DIR, "paused")  # 1.2.x "Pause Blighter Child.cmd" (= off)
+LEGACY_OPEN = os.path.join(STATE_DIR, "open")      # 1.2.x parent app's Pause (now Open all)
 MAX_LOG_LINES = 100000
 NO_WINDOW = 0x08000000          # CREATE_NO_WINDOW
 
@@ -222,25 +233,40 @@ def fix_conf_permissions():
 
 
 def is_bypassed():
-    """Switched off completely on the PC itself ("Pause Blighter Child.cmd"):
-    firewall and proxy settings are back to normal, so Squid sees nothing."""
-    return os.path.exists(PAUSED_FLAG)
+    """Switched off completely by an administrator on the PC itself
+    (blighter-system.ps1 off, for troubleshooting): firewall and proxy
+    settings are back to normal, so Squid sees nothing."""
+    return os.path.exists(OFF_FLAG) or os.path.exists(LEGACY_PAUSED)
 
 
-def is_open():
-    return os.path.exists(OPEN_FLAG)
+def read_control():
+    """{"state", "by", "since"}: the Controls tab's switch as stored on the PC.
+    by is "parent" (the parent app) or "pc" (set on the PC itself)."""
+    parts = read(CONTROL_FILE).split(None, 2)
+    state = parts[0] if parts and parts[0] in domains.CONTROLS else domains.CONTROL_FILTERED
+    if not parts and os.path.exists(LEGACY_OPEN):        # not migrated yet
+        state = domains.CONTROL_OPEN
+    by = parts[1] if len(parts) > 1 and parts[1] in ("parent", "pc") else "parent"
+    since = parts[2].strip() if len(parts) > 2 else ""
+    return {"state": state, "by": by, "since": since}
 
 
-def is_paused():
-    return is_open() or is_bypassed()
+def control_state():
+    return read_control()["state"]
 
 
-def paused_rules():
-    # The parent app's Pause: Squid lets everything through.  The firewall
-    # and proxy settings stay on, so every request is still logged.
-    if is_open():
-        return "# PAUSED (Pause in the parent app): everything allowed, still logged\nhttp_access allow localhost\n"
-    return ""
+def write_control(state, by):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    write(CONTROL_FILE, f"{state} {by} {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+
+def migrate_legacy():
+    """1.2.x: the parent app's Pause and the local 'Pause Blighter Child.cmd'
+    both become Open all (setup's 'enable' switches a local pause back on)."""
+    if not os.path.exists(CONTROL_FILE) and (os.path.exists(LEGACY_OPEN) or os.path.exists(LEGACY_PAUSED)):
+        write_control(domains.CONTROL_OPEN, "pc" if os.path.exists(LEGACY_PAUSED) else "parent")
+    if os.path.exists(LEGACY_OPEN):
+        os.remove(LEGACY_OPEN)
 
 
 def system_ps1(action, timeout=120):
@@ -276,7 +302,10 @@ def render_rules(mode, allow_lines, block_lines, discord=None, home=None, opera=
         home = home_net()
     if opera is None:
         opera = opera_blocked()
-    head += paused_rules()
+    control = control_state()
+    if control != domains.CONTROL_FILTERED:
+        # Block all / Open all: the filters are kept on disk but not used.
+        return head + domains.control_rules(control, home["allowed"], home["subnets"])
     head += domains.home_net_rules(home["allowed"], home["subnets"])
     head += domains.opera_rules(opera)
     head += domains.discord_rules(discord)
@@ -387,7 +416,8 @@ def cmd_get():
         "discord": discord_allowed(),
         "home_net": home_net(),
         "opera": opera_blocked(),
-        "paused": is_paused(),
+        "control": read_control(),
+        "bypassed": is_bypassed(),
     })
 
 
@@ -411,8 +441,8 @@ def cmd_status():
         "child_is_admin": sysst.get("child_is_admin"),
         "other_admins": sysst.get("other_admins", []),
         "network_profile": sysst.get("network_profile", "?"),
-        "paused": is_paused(),
-        "bypassed": bool(sysst.get("paused")),
+        "control": read_control(),
+        "bypassed": bool(sysst.get("off")),
         "home_net": home_net(),
         "warnings": sysst.get("warnings", []),
     })
@@ -491,7 +521,7 @@ def cmd_set():
     warn = [l for l in msg.splitlines() if "WARNING" in l] + opt_warnings
     out({"ok": True, "message": message, "discord": discord_allowed(), "home_net": home_net(),
          "opera": opera_blocked(),
-         "paused": is_paused(),
+         "control": read_control(),
          "notes": n1 + n2, "warnings": warn[-10:],
          "allow": allow, "block": block, "mode": mode})
 
@@ -530,39 +560,139 @@ def cmd_netinfo():
     out({"networks": current_networks()})
 
 
-def cmd_pause(on):
-    """The parent app's Pause (on=True: every site allowed, activity still
-    recorded) or Resume.  Resume also switches Blighter back on if it was
-    switched off on the PC itself with 'Pause Blighter Child.cmd'."""
+CONTROL_MESSAGES = {
+    domains.CONTROL_FILTERED: "Filtered - the filters apply.",
+    domains.CONTROL_BLOCK: "Block all - every website and Discord are blocked.",
+    domains.CONTROL_OPEN: "Open all - every website and Discord are allowed; activity is still recorded.",
+}
+
+
+def cmd_control(state, local):
+    """The Controls tab's switch.  The firewall and proxy settings stay on in
+    every state, so activity is always recorded; only Squid's rules and the
+    Discord voice rule change.  Switches Blighter back on if it was switched
+    off completely on the PC."""
     problems = []
-    if on:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        write(OPEN_FLAG, time.strftime("%Y-%m-%d %H:%M:%S") + "\n")
-    elif os.path.exists(OPEN_FLAG):
-        os.remove(OPEN_FLAG)
+    migrate_legacy()
+    write_control(state, "pc" if local else "parent")
     write(RULES_FILE, render_rules(read_mode(), read(ALLOW_FILE).splitlines(), read(BLOCK_FILE).splitlines()))
     code, msg = squid_parse()
     ok, rmsg = (squid_reload() if code == 0 else (False, msg))
     if not ok:
         problems.append("Squid: " + parse_errors(rmsg))
-    if not on and is_bypassed():
-        code, msg = system_ps1("resume", timeout=300)
+    message = CONTROL_MESSAGES[state]
+    if is_bypassed():
+        code, msg = system_ps1("on", timeout=300)
         if code != 0:
             problems.append("Firewall / proxy: " + msg[-800:])
-    if on:
-        message = "Filtering PAUSED - all websites are allowed; activity is still recorded."
-        if is_bypassed():
-            message += (" Note: Blighter was switched off on the PC itself ('Pause Blighter Child'), "
-                        "so nothing is recorded until you press Resume.")
+        else:
+            message += "  Blighter had been switched off on the PC itself; it is back on."
     else:
-        message = "Filtering RESUMED."
-    out({"ok": not problems, "paused": is_paused(), "bypassed": is_bypassed(),
+        code, msg = apply_firewall_options()
+        if code != 0:
+            problems.append("Firewall: " + msg[-300:])
+    out({"ok": not problems, "control": read_control(), "bypassed": is_bypassed(),
          "message": message, "errors": problems}, 0 if not problems else 1)
+
+
+# ---- Log out / shut down / restart ----------------------------------------------
+# Sessions are found with the Windows Terminal Services API (wtsapi32), which
+# every edition has (quser.exe and msg.exe are missing on Windows Home).
+WTS_USER_NAME = 5
+WTS_DOMAIN_NAME = 7
+
+
+def _sessions():
+    """[(session id, "DOMAIN\\user")] for every session with a user signed in."""
+    from ctypes import wintypes
+    wts = ctypes.windll.wtsapi32
+
+    class WTS_SESSION_INFO(ctypes.Structure):
+        _fields_ = [("SessionId", wintypes.DWORD), ("pWinStationName", wintypes.LPWSTR),
+                    ("State", ctypes.c_int)]
+
+    ptr = ctypes.POINTER(WTS_SESSION_INFO)()
+    count = wintypes.DWORD()
+    if not wts.WTSEnumerateSessionsW(None, 0, 1, ctypes.byref(ptr), ctypes.byref(count)):
+        raise OSError(ctypes.GetLastError(), "WTSEnumerateSessions failed")
+
+    def query(sid, cls):
+        buf, size = wintypes.LPWSTR(), wintypes.DWORD()
+        if not wts.WTSQuerySessionInformationW(None, sid, cls, ctypes.byref(buf), ctypes.byref(size)):
+            return ""
+        try:
+            return buf.value or ""
+        finally:
+            wts.WTSFreeMemory(buf)
+
+    found = []
+    try:
+        for i in range(count.value):
+            sid = ptr[i].SessionId
+            user = query(sid, WTS_USER_NAME)
+            if user:
+                found.append((sid, query(sid, WTS_DOMAIN_NAME) + "\\" + user))
+    finally:
+        wts.WTSFreeMemory(ptr)
+    return found
+
+
+def _account_sid(name):
+    """DOMAIN\\user -> "S-1-5-..." (or "" if it cannot be looked up)."""
+    from ctypes import wintypes
+    adv = ctypes.windll.advapi32
+    sid = ctypes.create_string_buffer(256)
+    sid_len, dom_len = wintypes.DWORD(256), wintypes.DWORD(256)
+    dom = ctypes.create_unicode_buffer(256)
+    use = wintypes.DWORD()
+    if not adv.LookupAccountNameW(None, name, sid, ctypes.byref(sid_len), dom, ctypes.byref(dom_len),
+                                  ctypes.byref(use)):
+        return ""
+    text = wintypes.LPWSTR()
+    if not adv.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+        return ""
+    try:
+        return text.value or ""
+    finally:
+        ctypes.windll.kernel32.LocalFree(text)
+
+
+def cmd_logout():
+    """Log the child's account out of every session it has on this PC."""
+    conf = child_conf()
+    user, want_sid = conf.get("CHILD_USER", ""), conf.get("CHILD_SID", "")
+    if not user:
+        out({"ok": False, "message": "No child account is recorded on this PC."}, 1)
+    try:
+        ids = [sid for sid, name in _sessions()
+               if name.split("\\")[-1].lower() == user.lower()
+               or (want_sid and _account_sid(name) == want_sid)]
+    except OSError as e:
+        out({"ok": False, "message": f"Could not list the PC's sessions: {e}"}, 1)
+    if not ids:
+        out({"ok": True, "logged_out": False, "message": f"{user} is not logged in."})
+    failed = [i for i in ids if not ctypes.windll.wtsapi32.WTSLogoffSession(None, i, False)]
+    if failed:
+        out({"ok": False, "message": f"Could not log {user} out (Windows error {ctypes.GetLastError()})."}, 1)
+    out({"ok": True, "logged_out": True, "message": f"{user} has been logged out."})
+
+
+def cmd_power(action):
+    """Shut down or restart in 5 seconds, so this reply reaches the parent app
+    first.  (A delay also makes Windows close programs without asking.)"""
+    flag = "/s" if action == "shutdown" else "/r"
+    code, text = run(["shutdown.exe", flag, "/t", "5", "/d", "p:0:0",
+                      "/c", "Blighter Restrictor: requested by the parent app"])
+    if code != 0:
+        out({"ok": False, "message": f"Could not {'shut down' if action == 'shutdown' else 'restart'} "
+                                     f"the PC: {text[-300:]}"}, 1)
+    out({"ok": True, "message": ("The PC is shutting down." if action == "shutdown" else "The PC is restarting.")})
 
 
 def cmd_reload():
     # Rewrite rules.conf too, so a PC set up by an older version gets the
     # current Squid settings (e.g. the neutral error pages).
+    migrate_legacy()
     write(RULES_FILE, render_rules(read_mode(), read(ALLOW_FILE).splitlines(), read(BLOCK_FILE).splitlines()))
     code, msg = squid_parse()
     if code != 0:
@@ -608,6 +738,7 @@ def cmd_logstart(args):
     rotated = len(args) > 1 and args[1] == "rotated"
     res = logtail.start(os.path.join(LOG_DIR, "access.log"), _rotated_logs(), n, rotated)
     res["bypassed"] = is_bypassed()
+    res["control"] = read_control()
     out(res)
 
 
@@ -617,6 +748,7 @@ def cmd_lognext(args):
     ino = "" if args[0] == "-" else args[0]
     res = logtail.next_lines(os.path.join(LOG_DIR, "access.log"), _rotated_logs(), ino, args[1])
     res["bypassed"] = is_bypassed()
+    res["control"] = read_control()
     out(res)
 
 
@@ -628,6 +760,7 @@ def cmd_init():
         write(BLOCK_FILE, DEFAULT_BLOCK)
     if not os.path.exists(MODE_FILE):
         write(MODE_FILE, domains.MODE_BLOCKLIST + "\n")
+    migrate_legacy()
     if not os.path.exists(DNS_FILE):
         write(DNS_FILE, "dns_nameservers 1.1.1.1 8.8.8.8\n")
     allow = read(ALLOW_FILE).splitlines()
@@ -637,7 +770,7 @@ def cmd_init():
 
 
 USAGE = ("usage: blighter-apply get|status|set|reload|log N [rotated]|logstart N [rotated]|"
-         "lognext INO OFFSET|init|netinfo|pause|resume")
+         "lognext INO OFFSET|init|netinfo|filtered|block|open [local]|logout|shutdown|restart")
 
 
 def main():
@@ -669,8 +802,12 @@ def main():
         cmd_init()
     elif cmd == "netinfo" and not rest:
         cmd_netinfo()
-    elif cmd in ("pause", "resume") and not rest:
-        cmd_pause(cmd == "pause")
+    elif cmd in domains.CONTROLS and rest in ([], ["local"]):
+        cmd_control(cmd, bool(rest))
+    elif cmd == "logout" and not rest:
+        cmd_logout()
+    elif cmd in ("shutdown", "restart") and not rest:
+        cmd_power(cmd)
     else:
         sys.exit(USAGE)
 

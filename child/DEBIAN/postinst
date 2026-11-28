@@ -3,7 +3,7 @@
 # Purpose: reload systemd units and tell the parent how to finish setup;
 # on an upgrade, re-apply the firewall, put this version's squid.conf in
 # place (only if the current one is Blighter's own) and rewrite the Squid
-# rules.
+# rules (a 1.2.x Pause becomes Open all).
 # Copyright (C) 2026 Ian Packer
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This program is free software: you can redistribute it and/or modify it
@@ -34,7 +34,8 @@ if [ "$1" = "configure" ]; then
             fi
         fi
         # Rewrite the Squid rules with this version's settings (e.g. the
-        # neutral error pages) and reload Squid; the lists are kept.
+        # neutral error pages) and reload Squid; the lists are kept.  This
+        # also turns a 1.2.x Pause into 1.3.0's Open all.
         /usr/sbin/blighter-apply reload >/dev/null 2>&1 || true
     else
         echo ""

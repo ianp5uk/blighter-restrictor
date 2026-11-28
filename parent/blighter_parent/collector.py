@@ -3,7 +3,7 @@
 #
 # Purpose: while the app is logged in to a child's PC, keep fetching that
 # PC's Squid activity log - whichever child is selected and whichever tab is
-# open, and whether filtering is on or paused.  Collection for a child starts
+# open, and whatever the Controls tab says.  Collection for a child starts
 # when the app logs in to their PC (selecting the child does that) and stops
 # only when the parent logs out of it (Log out button / menu), removes the
 # child, or closes the app.  A timer never logs back in by itself after a
@@ -16,7 +16,10 @@
 # Entries already collected are kept for the session (up to MAX_ENTRIES per
 # child), so the line count only limits the first history request.
 # If the PC cannot be reached the data is kept, shown as out of date, and
-# fetching is retried (less often after repeated failures).  Older PCs
+# fetching is retried (less often after repeated failures).
+# Each reply also says what the Controls tab's switch is on the PC (1.3.0+),
+# so the children list can show "- OPEN ALL" / "- BLOCK ALL" without the
+# Controls tab being open.  Older PCs
 # (Blighter child before 1.2.6) have no "lognext": for them the last
 # `initial_lines` lines are fetched each time and duplicates dropped.
 #
@@ -60,6 +63,7 @@ class ChildActivity:
         self.failures = 0
         self.gap = False              # some lines may have been missed (log rotated away)
         self.bypassed = False         # Blighter switched off on the PC itself
+        self.control = None           # {"state", "by", "since"} from the PC, if it said
         self.busy = False
         self.next_due = 0.0
 
@@ -147,6 +151,7 @@ class Collector(QObject):
         def job():
             r = self.remotes.get(child)
             lines, gap, bypassed = [], False, None
+            seen = {}                 # the latest "control" any reply carried
             pos = (a.ino, a.offset)
             legacy = a.legacy
 
@@ -158,6 +163,8 @@ class Collector(QObject):
                     pos = (res.get("ino", ""), int(res.get("offset", 0)))
                     g = g or bool(res.get("gap"))
                     byp = res.get("bypassed")
+                    if res.get("control"):
+                        seen["control"] = res["control"]
                     if not res.get("more"):
                         break
                 return got, pos, g, byp
@@ -172,17 +179,19 @@ class Collector(QObject):
                     lines += res.get("lines", [])
                     pos = (res.get("ino", ""), int(res.get("offset", 0)))
                     bypassed = res.get("bypassed")
+                    if res.get("control"):
+                        seen["control"] = res["control"]
                 except TooOld:
                     legacy = True
             if legacy:
                 text = r.log(start_lines, rotated)
                 return {"lines": text.splitlines(), "pos": (None, 0), "legacy": True,
-                        "gap": False, "bypassed": None, "history": history is not None}
+                        "gap": False, "bypassed": None, "control": None, "history": history is not None}
             if not restart:
                 got, pos, gap, bypassed = catch_up(pos)
                 lines += got
             return {"lines": lines, "pos": pos, "legacy": False, "gap": gap,
-                    "bypassed": bypassed, "history": history is not None}
+                    "bypassed": bypassed, "control": seen.get("control"), "history": history is not None}
 
         def ok(res):
             a.busy = False
@@ -193,6 +202,8 @@ class Collector(QObject):
             a.gap = a.gap or res["gap"]
             if res["bypassed"] is not None:
                 a.bypassed = bool(res["bypassed"])
+            if res["control"]:
+                a.control = dict(res["control"])
             a.last_ok, a.last_error, a.failures = time.time(), "", 0
             a.next_due = time.monotonic() + POLL_SECONDS
             self.updated.emit(cid)
